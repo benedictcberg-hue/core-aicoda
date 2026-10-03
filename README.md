@@ -85,6 +85,13 @@ sagt sie nicht.
 Zugeordnet wird über die Zeile `Roadmap: M2 · B-8 · R1` der FRAGE: `B-8` trifft den
 Punkt mit dieser Kennung, `Anhang B 8` ist eine eigene Klasse.
 
+**Fluss lebt:** Jeder Knoten trägt eine Perle je offenem Punkt (rot = bei dir, blau = KI,
+gestrichelt = wartet auf Nachzug). Über dem Diagramm steht, wie viele Punkte bis zum Release
+fehlen und wo der Engpass nach Restpunkten liegt; „nach Restpunkten“ zeichnet diesen Pfad statt
+des deklarierten (Mermaid bleibt beim deklarierten). Zeigt man auf einen offenen Punkt, markiert
+das Diagramm, was sein Haken fertig und frei machen würde. **Probe** schaltet gedachte Haken frei:
+nichts wird geschrieben, alle echten Haken sind solange gesperrt, Esc oder Reiterwechsel beendet sie.
+
 Abhängigkeiten im Flussdiagramm: trägt ein Meilenstein in `roadmap.json` ein
 Feld `"nach": ["M1", …]`, gelten diese Felder. Sonst zeichnet die Seite den
 Stand aus dem Diagramm „Kritischer Pfad“ im Forum-README (M0 → M1 → M2/M3/M4/M6,

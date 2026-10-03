@@ -2,7 +2,7 @@
  * Farben nur als Tokens; hell, dunkel (System oder Schalter) und Windows-Kontrastmodus. */
 
 :root {
-  --pult-version: "2026.10.03-23";
+  --pult-version: "2026.10.03-24";
   --grund: #f3f5f8;
   --flaeche: #ffffff;
   --flaeche-2: #f2f5f9;
@@ -767,6 +767,62 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
 .fluss-leiste { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; }
 .fluss-leiste h2 { display: flex; align-items: center; gap: 8px; }
 .fluss-leiste h2 > .ic { color: var(--text-leise); }
+.fluss-leiste h2 { margin-right: auto; }
+.fluss-schalter { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.fluss-schalter .knopf[aria-pressed="true"], .probe-knopf[aria-pressed="true"] {
+  background: var(--akzent-hell); color: var(--akzent); border-color: color-mix(in srgb, var(--akzent) 45%, transparent);
+}
+.fluss.in-probe { box-shadow: 0 0 0 2px var(--teil), var(--schatten-1); }
+
+/* Fluss lebt: Perlen je offenem Punkt */
+.perlen-zeile { display: block; min-height: 10px; line-height: 0; }
+.perlen { display: block; overflow: visible; }
+.perle { --perle: var(--offen); }
+.perle.dir, .perle.nachzug { --perle: var(--zug); }
+.perle.ki { --perle: var(--akzent); }
+.perle.gedacht { --perle: var(--ok-voll); }
+.perle circle { fill: var(--perle); stroke: var(--perle); stroke-width: 1.2; }
+.perle.teil circle, .perle.gedacht circle { fill: none; }
+.perle.nachzug circle { fill: none; stroke-dasharray: 2.2 1.6; }
+.perle-halb { fill: var(--perle); }
+.perle-haken { fill: none; stroke: var(--ok-voll); stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.perlen-mehr { fill: var(--text-leise); font-size: 9px; font-weight: 700; }
+.perle-muster { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--zug); }
+.perle-muster.ki { background: var(--akzent); }
+.perle-muster.nachzug { background: transparent; border: 1.5px dashed var(--zug); }
+
+/* Engpass nach Restpunkten */
+.engpass { margin: 8px 0 0; }
+.engpass-satz { margin: 0; font-weight: 600; }
+.engpass-fuss { margin: 2px 0 0; color: var(--text-leise); font-size: 0.8rem; }
+.ms-link { padding: 0; border: 0; background: none; font: inherit; font-weight: 750; color: var(--akzent); text-decoration: underline; cursor: pointer; }
+
+/* Probe */
+.probe-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0 0; padding: 8px 12px; border-radius: 10px; background: var(--teil-hell); }
+.probe-banner > span { flex: 1 1 16em; }
+.probe-liste { margin: 0 0 18px; padding: 12px 18px 14px; display: grid; gap: 2px; }
+.probe-liste legend { display: flex; align-items: center; gap: 6px; padding: 0 6px; font-weight: 700; }
+.probe-gruppe { margin-top: 8px; color: var(--text-leise); font-size: 0.82rem; font-weight: 650; }
+.probe-zeile { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 2px 4px; border-radius: 8px; cursor: pointer; overflow-wrap: anywhere; }
+.probe-zeile:hover { background: var(--flaeche-2); }
+.probe-zeile input { width: 20px; height: 20px; flex: none; accent-color: var(--ok-voll); }
+
+/* Vorschau beim Zeigen, Zündung, Einzeichnen (nur Keyframes: reduced-motion schaltet sie ab) */
+.fluss-knoten.vorschau-fertig { outline: 2px dashed var(--ok-voll); outline-offset: 2px; }
+.fluss-knoten.vorschau-frei { box-shadow: 0 0 0 2px var(--ok-voll), var(--schatten-1); }
+.fluss-kante.vorschau { stroke: var(--ok-voll); stroke-width: 3; }
+@keyframes einzeichnen { from { stroke-dasharray: 100; stroke-dashoffset: 100; } to { stroke-dasharray: 100; stroke-dashoffset: 0; } }
+.fluss-kante.einzeichnen { animation: einzeichnen 0.6s ease-out; }
+@keyframes engpass-ring { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--zug) 60%, transparent); } to { box-shadow: 0 0 0 12px transparent; } }
+.fluss-knoten.engpass-blitz { animation: engpass-ring 0.6s ease-out 2; }
+@keyframes zuenden {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok-voll) 70%, transparent); }
+  40% { box-shadow: 0 0 18px 6px color-mix(in srgb, var(--ok-voll) 45%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.fluss-knoten.zuendet { animation: zuenden 0.9s ease-out; }
+@keyframes puls { from { stroke-dasharray: 10 100; stroke-dashoffset: 110; } to { stroke-dasharray: 10 100; stroke-dashoffset: 0; } }
+.fluss-kante.puls { animation: puls 0.9s linear; }
 .klein-knopf { padding: 5px 12px; font-size: 0.86rem; }
 .fluss-rahmen { overflow-x: auto; margin: 14px -18px 0; padding: 6px 18px 12px; }
 .fluss-flaeche { position: relative; margin: 0 auto; }
@@ -1103,6 +1159,7 @@ mark { background: var(--teil-hell); color: inherit; border-radius: 3px; padding
   .nachzug-aktionen { flex-direction: row; flex-wrap: wrap; }
   .nachzug-aktionen .knopf, .nachzug-kopf .knopf { min-height: 44px; }
   .sortierung .knopf { min-height: 44px; }
+  .fluss-leiste .knopf, .probe-banner .knopf { min-height: 44px; }
   .nachzug > summary, .nachzug-kopf { padding-left: 14px; padding-right: 14px; }
   /* Lage am Handy: Ring neben Ziel und Titel, alles Weitere volle Breite */
   .lage { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 14px; align-items: center; }
@@ -1195,6 +1252,10 @@ mark { background: var(--teil-hell); color: inherit; border-radius: 3px; padding
 @media (forced-colors: active) {
   .ball-knopf, .fluss-termin, .marke.vermutet { border: 1px solid ButtonText; }
   .sortierung .knopf[aria-pressed="true"] { border: 2px solid Highlight; }
+  .perle circle, .perle-halb, .perle-haken { fill: CanvasText; stroke: CanvasText; }
+  .perle.teil circle, .perle.nachzug circle, .perle.gedacht circle { fill: Canvas; }
+  .perle-muster { forced-color-adjust: none; background: CanvasText; }
+  .fluss-knoten.vorschau-fertig { outline-color: Highlight; }
   .ready-leiste > li { forced-color-adjust: none; background: Canvas; color: CanvasText; border: 1px solid CanvasText; }
   .ready-leiste > li.rl-ok { background: Highlight; color: HighlightText; }
   .ready-leiste > li.abweichend { border: 2px dashed CanvasText; }

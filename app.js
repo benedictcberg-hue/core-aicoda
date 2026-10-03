@@ -36,6 +36,7 @@ const zustand = {
   rest: null,           // X-RateLimit-Remaining der letzten Antwort
   wartet: new Map(),    // Thread-Pfad → Anhang in der Atempause {bis, sorte, nummer, quelle, arbeit …}
   zuendung: null,       // {ms, bis}: Meilenstein, der gerade durch einen Haken fertig wurde
+  probe: null,          // Set gedachter Haken, solange die Probe läuft (sonst null); wird nie gespeichert
 };
 
 /* Während laden() läuft: was seit Ladebeginn geschrieben wurde. Das ist neuer als der Baum,
@@ -70,7 +71,7 @@ function el(tag, attrs, ...kinder) {
 const SVG_NS = "http://www.w3.org/2000/svg";
 function svgEl(tag, attrs) {
   const knoten = document.createElementNS(SVG_NS, tag);
-  for (const [k, v] of Object.entries(attrs || {})) knoten.setAttribute(k, String(v));
+  for (const [k, v] of Object.entries(attrs || {})) if (v !== null && v !== undefined) knoten.setAttribute(k, String(v));
   return knoten;
 }
 
@@ -676,6 +677,10 @@ function route() {
     reiter = "zug";
     zeigen("ansicht-zug");
   }
+  if (zustand.probe && reiter !== "roadmap") {
+    zustand.probe = null;
+    if (zustand.roadmap) roadmapZeichnen();
+  }
   for (const a of document.querySelectorAll("#reiter a")) {
     const aktiv = a.dataset.reiter === reiter;
     a.classList.toggle("aktiv", aktiv);
@@ -983,7 +988,10 @@ async function abhaken(eintrag, art, vorgabe) {
         const folge = folgeSatz(id, st0, graphStand(zustand.roadmap));
         text = folge.text;
         // Für das Flussdiagramm: der fertige Meilenstein „zündet“ kurz.
-        if (folge.fertig) zustand.zuendung = { ms: folge.fertig, bis: Date.now() + 1500 };
+        if (folge.fertig) {
+          zustand.zuendung = { ms: folge.fertig, bis: Date.now() + 1500 };
+          mitFokus(flussZeichnen);
+        }
       }
       melden(text, { aktion: rueckgaengig(id, art, ergebnis), fokus: `haken:${id}` });
     },
@@ -1048,11 +1056,12 @@ function hakenKnopf(eintrag, art, klein) {
     "aria-checked": fertig ? "true" : status === "~" ? "mixed" : "false",
     "aria-label": `${eintrag.id} ${eintrag.titel || ""}`.trim(),
     "aria-busy": laeuft ? "true" : null,
-    title: laeuft ? "wird gespeichert …" : fertig ? "erledigt · klicken öffnet wieder" : "als erledigt abhaken",
+    title: zustand.probe ? "Probe läuft – erst beenden" : laeuft ? "wird gespeichert …" : fertig ? "erledigt · klicken öffnet wieder" : "als erledigt abhaken",
     "data-fokus": `haken:${eintrag.id}`,
+    disabled: !!zustand.probe,
   }, svg);
   knopf.addEventListener("click", () => {
-    if (zustand.laufend.has(eintrag.id)) return;
+    if (zustand.laufend.has(eintrag.id) || zustand.probe) return;
     if (fertig) wiederOeffnen(eintrag, art); else abhaken(eintrag, art);
   });
   return knopf;
@@ -2935,7 +2944,7 @@ function roadmapZeichnen() {
   const ms = $("roadmap-meilensteine");
   const readyBox = $("roadmap-ready-box");
   const extra = $("roadmap-extra");
-  for (const b of [gesamt, $("roadmap-fluss"), ms, readyBox, extra]) b.replaceChildren();
+  for (const b of [gesamt, $("roadmap-fluss"), $("roadmap-probe"), ms, readyBox, extra]) b.replaceChildren();
   if (!rm) {
     $("roadmap-stand").textContent = "";
     ms.append(leer("info", "Keine roadmap.json im Forum."));
@@ -2966,6 +2975,7 @@ function roadmapZeichnen() {
   );
 
   flussZeichnen();
+  probeListeZeichnen();
 
   const offeneSlugs = new Set(offeneFragen().map((q) => q.thread.slug));
   for (const m of rm.meilensteine || []) {
@@ -3034,7 +3044,7 @@ function roadmapZeichnen() {
  * (meilensteine[].nach = ["M1", …]); trägt kein Meilenstein ein „nach“, gilt der
  * Stand aus dem Diagramm „Kritischer Pfad“ im Forum-README (03.10.2026). */
 const FLUSS_VORGABE = { M1: ["M0"], M2: ["M1"], M3: ["M1"], M4: ["M1"], M6: ["M1"], M5: ["M2", "M3", "M4"], M7: ["M5"] };
-const FLUSS = { hoehe: 112, zeilenAbstand: 16, spaltenAbstand: 44, minBreite: 148, maxBreite: 240, stufenUnter: 720 };
+const FLUSS = { hoehe: 126, zeilenAbstand: 16, spaltenAbstand: 44, minBreite: 148, maxBreite: 240, stufenUnter: 720 };
 
 function meilensteinZahlen(m) {
   const p = m.punkte || [];
@@ -3184,42 +3194,201 @@ function folgeSatz(id, st0, st1) {
   return { text: `${id} abgehakt. ${ms.id} fertig${teile.length ? ` – ${teile.join("; ")}` : ""}.`, fertig: ms.id };
 }
 
+/* --- Fluss lebt: Perlen je offenem Punkt, Engpass nach Restpunkten, Vorschau, Probe ---
+ * Alles hier ist Darstellung: mermaidText und roadmap.json bleiben beim deklarierten Pfad,
+ * und die Probe schreibt nichts. Bewegung nur über CSS-Keyframes, damit die reduced-motion-
+ * Regel in style.css sie abschaltet. */
+let flussAnimation = "";   // "pfad": beim nächsten Zeichnen neue kritische Kanten einzeichnen
+
+function perlenSvg(m, gedacht) {
+  const offen = (m.punkte || []).filter((p) => p.status !== "x");
+  if (!offen.length) return null;
+  const mehr = offen.length > 9;
+  const zeigen = mehr ? offen.slice(0, 8) : offen;
+  const breite = zeigen.length * 11 + (mehr ? 24 : 0);
+  const svg = svgEl("svg", { class: "perlen", width: breite, height: 10, viewBox: `0 0 ${breite} 10`, "aria-hidden": "true", focusable: "false" });
+  const { nachzug } = beschluesse();
+  zeigen.forEach((p, i) => {
+    const cx = 5 + i * 11;
+    const art = gedacht.has(p.id) ? "gedacht" : nachzug.has(p.id) ? "nachzug" : istMeins(p) ? "dir" : "ki";
+    const gruppe = svgEl("g", { class: `perle ${art}${p.status === "~" && art !== "gedacht" ? " teil" : ""}` });
+    gruppe.append(svgEl("circle", { cx, cy: 5, r: 4 }));
+    if (p.status === "~" && art !== "gedacht") gruppe.append(svgEl("path", { class: "perle-halb", d: `M${cx - 4} 5A4 4 0 0 0 ${cx + 4} 5Z` }));
+    if (art === "gedacht") gruppe.append(svgEl("path", { class: "perle-haken", d: `M${cx - 2} 5.2l1.4 1.4 2.8-3` }));
+    svg.append(gruppe);
+  });
+  if (mehr) {
+    const t = svgEl("text", { x: 8 * 11 + 2, y: 9, class: "perlen-mehr" });
+    t.textContent = `+${offen.length - 8}`;
+    svg.append(t);
+  }
+  return svg;
+}
+
+/* Bis zum Ziel der Kette: Restpunkte, gemessener Pfad (meiste Restpunkte) und Engpass. */
+function engpassRechnen(rm, st) {
+  const g = st.g;
+  const ziel = g.kette.length ? g.kette[g.kette.length - 1] : "";
+  if (!ziel || !st.zahl.has(ziel)) return null;
+  const pfade = [];
+  const suchen = (id, pfad) => {
+    if (pfade.length >= 64) return;
+    if (id === ziel) { pfade.push([...pfad, id]); return; }
+    for (const n of st.nach.get(id) || []) if (!pfad.includes(n) && n !== id) suchen(n, [...pfad, id]);
+  };
+  for (const m of g.knoten) if (!(st.vor.get(m.id) || []).length) suchen(m.id, []);
+  if (!pfade.length) return null;
+  const offen = (id) => st.zahl.get(id).offen.length;
+  const rest = (pfad) => pfad.reduce((s, id) => s + offen(id), 0);
+  const deklariert = g.kette.join(">");
+  let gemessen = pfade[0];
+  for (const p of pfade) {
+    const d = rest(p) - rest(gemessen);
+    if (d > 0 || (d === 0 && p.join(">") === deklariert)) gemessen = p;
+  }
+  const kandidat = gemessen.filter((id) => id !== ziel).sort((a, b) => offen(b) - offen(a))[0];
+  const { nachzug } = beschluesse();
+  let n = 0;
+  let dir = 0;
+  let nz = 0;
+  for (const id of [ziel, ...st.vorfahren(ziel)]) {
+    for (const p of st.zahl.get(id).offen) {
+      n++;
+      if (istMeins(p)) { dir++; if (nachzug.has(p.id)) nz++; }
+    }
+  }
+  const ms = (rm.meilensteine || []).find((m) => m.id === ziel);
+  const v = /\d+\.\d+\.\d+\w*/.exec(ms ? ms.titel : "");
+  return {
+    ziel, version: v ? v[0] : "", gemessen, n, dir, nz,
+    engpass: kandidat && offen(kandidat) ? kandidat : "",
+    kanten: new Set(gemessen.slice(1).map((id, i) => `${gemessen[i]}>${id}`)),
+  };
+}
+
+/* Hover/Fokus auf einem offenen Punkt: was sein Haken frei machen würde. Nur Klassen, kein Neuzeichnen. */
+function vorschauWeg() {
+  for (const e of document.querySelectorAll("#roadmap-fluss .vorschau-fertig, #roadmap-fluss .vorschau-frei, #roadmap-fluss .vorschau")) {
+    e.classList.remove("vorschau-fertig", "vorschau-frei", "vorschau");
+  }
+}
+function vorschauZeigen(punktId) {
+  vorschauWeg();
+  const rm = zustand.roadmap;
+  if (!rm) return;
+  const gedacht = new Set(zustand.probe || []);
+  const st0 = graphStand(rm, gedacht);
+  gedacht.add(punktId);
+  const st1 = graphStand(rm, gedacht);
+  const ms = (roadmapPunkte().find(({ punkt }) => punkt.id === punktId) || {}).meilenstein;
+  if (!ms || st0.fertig(ms.id) || !st1.fertig(ms.id)) return;
+  const knoten = (id) => document.querySelector(`#roadmap-fluss [data-fokus="fluss:${CSS.escape(id)}"]`);
+  const k = knoten(ms.id);
+  if (k) k.classList.add("vorschau-fertig");
+  for (const s of st1.nach.get(ms.id) || []) {
+    if (st0.frei(s) || !st1.frei(s)) continue;
+    const n = knoten(s);
+    if (n) n.classList.add("vorschau-frei");
+    const kante = document.querySelector(`#roadmap-fluss path[data-von="${CSS.escape(ms.id)}"][data-nach="${CSS.escape(s)}"]`);
+    if (kante) kante.classList.add("vorschau");
+  }
+}
+
+/* Probe: gedachte Haken, nichts wird geschrieben. Endet mit Esc, Knopf, Reiterwechsel, Abmelden. */
+function probeUmschalten() {
+  zustand.probe = zustand.probe ? null : new Set();
+  roadmapTeileZeichnen("fluss:probe");
+}
+function probeBeenden(fokus) {
+  if (!zustand.probe) return;
+  zustand.probe = null;
+  roadmapTeileZeichnen(fokus);
+}
+function probeListeZeichnen() {
+  const box = $("roadmap-probe");
+  box.replaceChildren();
+  if (!zustand.probe || !zustand.roadmap) return;
+  const liste = el("fieldset", { class: "karte probe-liste" }, el("legend", {}, icon("fluss"), "Gedacht erledigt"));
+  for (const m of zustand.roadmap.meilensteine || []) {
+    const offen = (m.punkte || []).filter((p) => p.status !== "x");
+    if (!offen.length) continue;
+    liste.append(el("div", { class: "probe-gruppe" }, el("span", { class: "gruppe-id", text: m.id }), ` ${m.titel}`));
+    for (const p of offen) {
+      const kasten = el("input", { type: "checkbox", "data-fokus": `probe:${p.id}` });
+      kasten.checked = zustand.probe.has(p.id);
+      kasten.addEventListener("change", () => {
+        if (!zustand.probe) return;
+        if (kasten.checked) zustand.probe.add(p.id); else zustand.probe.delete(p.id);
+        flussZeichnen();
+      });
+      liste.append(el("label", { class: "probe-zeile" }, kasten, el("span", { class: "kennung", text: p.id }), el("span", { text: p.titel })));
+    }
+  }
+  box.append(liste);
+}
+
 function flussZeichnen() {
   const box = $("roadmap-fluss");
   box.replaceChildren();
   const rm = zustand.roadmap;
   if (!rm || !(rm.meilensteine || []).length) return;
-  const g = flussGraph(rm);
+  const gedacht = zustand.probe || new Set();
+  const st0 = graphStand(rm);
+  const st = zustand.probe ? graphStand(rm, gedacht) : st0;
+  const g = st0.g;
+  const nachRest = zustand.offen.get("fluss:pfad") === "rest";
+  const eng = engpassRechnen(rm, st);
+  const kritischeKnoten = nachRest && eng ? eng.gemessen : g.kette;
+  const istKritisch = (k) => (nachRest && eng ? eng.kanten.has(`${k.von}>${k.nach}`) : k.kritisch);
+  const warKritisch = (k) => (nachRest || !eng ? k.kritisch : eng.kanten.has(`${k.von}>${k.nach}`));
+  const animieren = flussAnimation;
+  flussAnimation = "";
+  const zuendung = zustand.zuendung && zustand.zuendung.bis > Date.now() ? zustand.zuendung.ms : "";
+  zustand.zuendung = null;
+  const { nachzug } = beschluesse();
 
   const zahlen = new Map(g.knoten.map((m) => [m.id, meilensteinZahlen(m)]));
   const termine = new Map();
   for (const x of termineAktiv()) if (x.ms && !termine.has(x.ms)) termine.set(x.ms, x);
-  const vorgaenger = (id) => g.kanten.filter((k) => k.nach === id).map((k) => k.von);
+  const vorgaenger = (id) => st0.vor.get(id) || [];
+  const siegel = (m) => {
+    const tage = (m.punkte || []).map((p) => p.erledigt || "").filter(Boolean).sort();
+    const d = tagAus(tage.length ? tage[tage.length - 1] : rm.stand);
+    return d ? `${zweistellig(d.getDate())}.${zweistellig(d.getMonth() + 1)}.` : "";
+  };
   const knoten = (m) => {
     const z = zahlen.get(m.id);
     const f1 = el("span", { class: "f-x" }); f1.style.width = z.n ? `${(z.x / z.n) * 100}%` : "0";
     const f2 = el("span", { class: "f-t" }); f2.style.width = z.n ? `${(z.t / z.n) * 100}%` : "0";
     const vor = vorgaenger(m.id);
     const termin = termine.get(m.id);
-    return el("button", {
+    const offen = (m.punkte || []).filter((p) => p.status !== "x");
+    const nz = offen.filter((p) => nachzug.has(p.id)).length;
+    const wirdFrei = zustand.probe && !st0.frei(m.id) && st.frei(m.id);
+    const istEngpass = nachRest && eng && eng.engpass === m.id;
+    let marke = null;
+    if (meilensteinIstNeu(m.id)) marke = el("span", { class: "marke neu", title: "seit deinem letzten Besuch geändert" }, icon("funke"), "neu");
+    else if (wirdFrei) marke = el("span", { class: "marke ok probe-frei", title: "in der Probe ohne offene Vorgänger" }, icon("haken"), "frei");
+    else if (istEngpass) marke = el("span", { class: "marke zug" }, icon("warnung"), "Engpass");
+    else if (z.stufe === "fertig") marke = el("span", { class: "marke ok", title: "fertig seit" }, icon("haken"), `fertig ${siegel(m)}`.trim());
+    else if (z.beiDir) marke = el("span", { class: "marke zug", text: `${z.beiDir} bei dir` });
+    const k = el("button", {
       type: "button",
-      class: `fluss-knoten ms-${z.stufe}${g.kette.includes(m.id) ? " kritisch" : ""}`,
-      "aria-label": `${m.id} ${m.titel}: ${z.x} von ${z.n} fertig${z.beiDir ? `, ${z.beiDir} bei dir` : ""}${vor.length ? `, nach ${vor.join(", ")}` : ""}${termin ? `, Termin ${langDatum(termin.tag)}` : ""}. Punkte zeigen`,
+      class: `fluss-knoten ms-${z.stufe}${kritischeKnoten.includes(m.id) ? " kritisch" : ""}${zuendung === m.id ? " zuendet" : ""}${istEngpass && animieren === "pfad" ? " engpass-blitz" : ""}`,
+      "aria-label": `${m.id} ${m.titel}: ${z.x} von ${z.n} fertig${offen.length ? `, ${offen.length} offen` : ""}${z.beiDir ? `, ${z.beiDir} bei dir` : ""}${nz ? `, ${nz} ${nz === 1 ? "wartet" : "warten"} auf Nachzug` : ""}${vor.length ? `, nach ${vor.join(", ")}` : ""}${termin ? `, Termin ${langDatum(termin.tag)}` : ""}${istEngpass ? ", Engpass" : ""}${wirdFrei ? ", in der Probe frei" : ""}. Punkte zeigen`,
       title: `${m.id} ${m.titel} · ${z.x}/${z.n} fertig`,
       "data-fokus": `fluss:${m.id}`,
       onclick: () => meilensteinZeigen(m.id),
     },
-    el("span", { class: "fluss-kopf" },
-      el("span", { class: "ms-id", text: m.id }),
-      meilensteinIstNeu(m.id) ? el("span", { class: "marke neu", title: "seit deinem letzten Besuch geändert" }, icon("funke"), "neu")
-        : z.stufe === "fertig" ? el("span", { class: "marke ok" }, icon("haken"), "fertig")
-          : z.beiDir ? el("span", { class: "marke zug", text: `${z.beiDir} bei dir` }) : null),
+    el("span", { class: "fluss-kopf" }, el("span", { class: "ms-id", text: m.id }), marke),
     el("span", { class: "fluss-titel", text: m.titel }),
     termin ? el("span", { class: "fluss-termin" }, icon("uhr"), `Termin ${kurzDatum(termin.tag)}`) : null,
     vor.length ? el("span", { class: "fluss-nach", text: `nach ${vor.join(" · ")}` }) : null,
     el("span", { class: "fluss-fuss" },
       el("span", { class: "fortschritt" }, f1, f2),
-      el("span", { class: "fluss-zahl", text: `${z.x}/${z.n}` })));
+      el("span", { class: "fluss-zahl", text: `${z.x}/${z.n}` })),
+    el("span", { class: "perlen-zeile" }, perlenSvg(m, gedacht)));
+    return k;
   };
 
   const spalten = Math.max(...g.knoten.map((m) => g.ebene.get(m.id))) + 1;
@@ -3231,6 +3400,7 @@ function flussZeichnen() {
   const breit = platz >= Math.min(spalten * FLUSS.minBreite + (spalten - 1) * FLUSS.spaltenAbstand, FLUSS.stufenUnter);
 
   let bild;
+  const gezuendet = [];
   if (breit) {
     const zeilen = g.knoten.map((m) => g.zeile.get(m.id));
     const oben = Math.min(...zeilen);
@@ -3267,8 +3437,17 @@ function flussZeichnen() {
       const d = y1 === y2
         ? `M${x1} ${y1}H${x2}`
         : `M${x1} ${y1}H${knick}C${knick + FLUSS.spaltenAbstand / 2} ${y1} ${x2 - FLUSS.spaltenAbstand / 2} ${y2} ${x2} ${y2}`;
-      const art = zahlen.get(k.von).stufe === "fertig" ? "fertig" : k.kritisch ? "kritisch" : "normal";
-      svg.append(svgEl("path", { d, class: `fluss-kante ${art}${k.kritisch ? " ist-kritisch" : ""}`, "marker-end": `url(#fluss-spitze-${art})` }));
+      const kritisch = istKritisch(k);
+      const art = zahlen.get(k.von).stufe === "fertig" ? "fertig" : kritisch ? "kritisch" : "normal";
+      const einzeichnen = animieren === "pfad" && kritisch && !warKritisch(k);
+      const puls = zuendung === k.von;
+      const pfad = svgEl("path", {
+        d, class: `fluss-kante ${art}${kritisch ? " ist-kritisch" : ""}${einzeichnen ? " einzeichnen" : ""}${puls ? " puls" : ""}`,
+        "marker-end": `url(#fluss-spitze-${art})`, "data-von": k.von, "data-nach": k.nach,
+        pathLength: einzeichnen || puls ? 100 : null,
+      });
+      if (puls) gezuendet.push(pfad);
+      svg.append(pfad);
     }
     flaeche.append(svg);
 
@@ -3294,6 +3473,14 @@ function flussZeichnen() {
         el("div", { class: "stufe-knoten" }, hier.map(knoten))));
     }
   }
+  if (zuendung) {
+    // Nach dem Glühen wieder ruhig; die Klassen sollen beim nächsten Zeichnen nicht wiederkommen.
+    setTimeout(() => {
+      const k = document.querySelector(`#roadmap-fluss [data-fokus="fluss:${CSS.escape(zuendung)}"]`);
+      if (k) k.classList.remove("zuendet");
+      for (const p of gezuendet) { p.classList.remove("puls"); p.removeAttribute("pathLength"); }
+    }, 950);
+  }
 
   const quelltext = mermaidText(rm, g);
   const mermaidPre = el("pre", { class: "text breit mermaid-text", text: quelltext, tabindex: "0", "aria-label": "Mermaid-Quelltext" });
@@ -3301,20 +3488,55 @@ function flussZeichnen() {
     el("summary", {}, icon("runter", "chevron"), "Mermaid-Quelltext (für GitHub, Forum, Doku)"), mermaidPre), "mermaid", false);
   const kopieren = el("button", { type: "button", class: "knopf zweit klein-knopf", onclick: () => mermaidKopieren(quelltext, mermaidBox, mermaidPre) },
     icon("kopieren"), "Mermaid kopieren");
+  const pfadKnopf = (wert, text) => el("button", {
+    type: "button", class: "knopf zweit klein-knopf", "aria-pressed": (wert === "rest") === nachRest ? "true" : "false", "data-fokus": `fluss:pfad:${wert}`,
+    onclick: () => {
+      if ((wert === "rest") === nachRest) return;
+      zustand.offen.set("fluss:pfad", wert);
+      flussAnimation = "pfad";
+      mitFokus(flussZeichnen, `fluss:pfad:${wert}`);
+    },
+  }, text);
+  const probeKnopf = el("button", {
+    type: "button", class: "knopf zweit klein-knopf probe-knopf", "aria-pressed": zustand.probe ? "true" : "false", "data-fokus": "fluss:probe",
+    title: "Gedachte Haken ausprobieren – nichts wird geschrieben", onclick: probeUmschalten,
+  }, icon("fluss"), "Probe");
 
-  box.append(el("section", { class: "karte fluss", "aria-label": "Roadmap als Flussdiagramm" },
+  let satz = null;
+  if (eng) {
+    const zielName = eng.version ? `v${eng.version}` : eng.ziel;
+    const msKnopf = (id) => el("button", { type: "button", class: "ms-link", onclick: () => meilensteinZeigen(id), "aria-label": `${id}: Punkte zeigen` }, id);
+    satz = el("div", { class: "engpass" },
+      el("p", { class: "engpass-satz" },
+        zustand.probe ? el("b", { text: "In der Probe: " }) : null,
+        eng.n ? `Bis ${zielName} fehlen ${anzahl(eng.n, "Punkt", "Punkte")}, ${eng.dir} bei dir${eng.nz ? ` (${eng.nz} davon nur noch Nachzug)` : ""}.` : `Bis ${zielName} fehlt kein Punkt mehr.`,
+        eng.engpass ? [" Engpass nach Restpunkten: ", msKnopf(eng.engpass), "."] : null),
+      el("p", { class: "engpass-fuss", text: "Jeder Punkt zählt 1 – ein PR und ein Handlauf sind nicht gleich groß." }));
+  }
+
+  box.append(el("section", { class: "karte fluss" + (zustand.probe ? " in-probe" : ""), "aria-label": "Roadmap als Flussdiagramm" },
     el("div", { class: "fluss-leiste" },
       el("h2", {}, icon("fluss"), "Flussdiagramm"),
+      el("div", { class: "fluss-schalter", role: "group", "aria-label": "Kritischer Pfad" },
+        pfadKnopf("json", "Pfad laut roadmap.json"), pfadKnopf("rest", "nach Restpunkten")),
+      probeKnopf,
       kopieren),
+    zustand.probe ? el("p", { class: "probe-banner", role: "status" }, icon("info"),
+      el("span", { text: "Probe – nichts wird geschrieben. Die Haken unten sind nur gedacht. Esc oder „Probe beenden“ beendet." }),
+      el("button", { type: "button", class: "knopf zweit klein-knopf", "data-fokus": "fluss:probe-ende", onclick: () => probeBeenden("fluss:probe") }, icon("x"), "Probe beenden")) : null,
     rm.kritischer_pfad ? el("p", { class: "lage-pfad" }, icon("roadmap"), el("span", {}, el("b", { text: "Kritischer Pfad: " }), rm.kritischer_pfad)) : null,
+    satz,
     bild,
     el("div", { class: "fluss-legende", "aria-hidden": "true" },
-      el("span", {}, el("i", { class: "strich kritisch" }), "kritischer Pfad"),
+      el("span", {}, el("i", { class: "strich kritisch" }), nachRest ? "Pfad nach Restpunkten" : "kritischer Pfad"),
       el("span", {}, el("i", { class: "strich fertig" }), "Vorgänger fertig"),
       el("span", {}, el("i", { class: "strich normal" }), "hängt ab von"),
       el("span", {}, el("i", { class: "punkt-farbe fertig" }), "fertig"),
       el("span", {}, el("i", { class: "punkt-farbe teil" }), "teilweise"),
       el("span", {}, el("i", { class: "punkt-farbe offen" }), "offen"),
+      el("span", {}, el("i", { class: "perle-muster dir" }), "offen bei dir"),
+      el("span", {}, el("i", { class: "perle-muster ki" }), "offen bei KI"),
+      el("span", {}, el("i", { class: "perle-muster nachzug" }), "wartet auf Nachzug"),
       g.ausJson ? null : el("span", { class: "fluss-quelle", text: "Abhängigkeiten: Forum-README (roadmap.json trägt kein „nach“)" })),
     mermaidBox));
 }
@@ -3373,7 +3595,7 @@ function punktZeile(q, offeneSlugs) {
   const nachzug = beschluesse().nachzug.get(q.id);
   const verweis = q.frage || q.thread;
   const t = verweis ? threadZuSlug(verweis) : null;
-  return el("li", { class: "punkt" + (status === "x" ? " ist-fertig" : ""), "data-zeile": q.id },
+  const zeile = el("li", { class: "punkt" + (status === "x" ? " ist-fertig" : ""), "data-zeile": q.id },
     hakenKnopf(q, "punkt", true),
     el("div", { class: "punkt-haupt" },
       el("div", { class: "punkt-titel" }, el("span", { class: "kennung", text: q.id }), " ", q.titel),
@@ -3385,6 +3607,13 @@ function punktZeile(q, offeneSlugs) {
       t ? threadVerweis(t, true) : null,
       werMarke(q.wer, q.status === "x")),
   );
+  if (q.status !== "x") {
+    zeile.addEventListener("pointerenter", () => vorschauZeigen(q.id));
+    zeile.addEventListener("pointerleave", vorschauWeg);
+    zeile.addEventListener("focusin", () => vorschauZeigen(q.id));
+    zeile.addEventListener("focusout", (e) => { if (!zeile.contains(e.relatedTarget)) vorschauWeg(); });
+  }
+  return zeile;
 }
 
 /* --- Threads --- */
@@ -4203,7 +4432,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-23";
+const FASSUNG = "2026.10.03-24";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
@@ -4319,7 +4548,8 @@ function verdrahten() {
     try {
       for (const k of Object.keys(sessionStorage)) if (k.startsWith("blob:")) sessionStorage.removeItem(k);
     } catch (_) { /* gesperrt */ }
-    for (const id of ["zug-neu", "zug-waechter", "zug-lage", "fragen-liste", "aufgaben-liste", "nachzug-box", "zuletzt-box", "roadmap-gesamt", "roadmap-fluss",
+    zustand.probe = null;
+    for (const id of ["zug-neu", "zug-waechter", "zug-lage", "fragen-liste", "aufgaben-liste", "nachzug-box", "zuletzt-box", "roadmap-gesamt", "roadmap-fluss", "roadmap-probe",
       "roadmap-meilensteine", "roadmap-ready-box", "roadmap-extra", "thread-liste", "thread-detail"]) $(id).replaceChildren();
     document.title = SEITENTITEL;
     abzeichenSetzen(0);
@@ -4380,6 +4610,7 @@ function verdrahten() {
 
   /* „/“ springt in die Thread-Suche, Esc schließt die Meldung. */
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && zustand.probe && !document.querySelector("dialog[open]")) { probeBeenden("fluss:probe"); return; }
     if (e.key === "Escape" && !meldung.hidden) { meldungZu(); return; }
     if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
     const z = e.target;
