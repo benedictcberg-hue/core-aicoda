@@ -2,16 +2,24 @@
 <html lang="de">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; connect-src https://api.github.com; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <title>CORE Betreiber-Pult</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232b5f9e'/%3E%3Cpath d='M9 10h14M9 16h8M9 22h4' stroke='%23fff' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='m17 22 3 3 5-6' fill='none' stroke='%236fd39b' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <meta name="pult-version" content="2026.10.03-6">
-  <link rel="stylesheet" href="style.css?v=2026.10.03-6">
-  <script src="thema.js?v=2026.10.03-6"></script>
+  <link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232b5f9e'/%3E%3Cpath d='M9 10h14M9 16h8M9 22h4' stroke='%23fff' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='m17 22 3 3 5-6' fill='none' stroke='%236fd39b' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="CORE-Pult">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e131a" media="(prefers-color-scheme: dark)">
+  <meta name="pult-version" content="2026.10.03-24">
+  <link rel="manifest" href="manifest.webmanifest?v=2026.10.03-24">
+  <link rel="stylesheet" href="style.css?v=2026.10.03-24">
+  <script src="thema.js?v=2026.10.03-24"></script>
 </head>
 <body>
   <header class="kopf">
@@ -37,6 +45,10 @@
       <a href="#roadmap" data-reiter="roadmap"><span data-icon="roadmap"></span>Roadmap <span class="zaehler leise" id="zaehler-roadmap"></span></a>
       <a href="#threads" data-reiter="threads"><span data-icon="threads"></span>Threads <span class="zaehler leise" id="zaehler-threads"></span></a>
     </nav>
+    <div class="neu-balken" id="neu-balken" role="status" hidden>
+      <span data-icon="funke"></span><span>Neu im Forum</span>
+      <button type="button" class="knopf klein-knopf" id="neu-anzeigen">Anzeigen</button>
+    </div>
   </header>
 
   <main id="inhalt" tabindex="-1">
@@ -79,6 +91,8 @@
     </section>
 
     <section id="ansicht-zug" class="ansicht" hidden>
+      <section id="zug-waechter" class="karte warnhinweis" aria-labelledby="zug-waechter-titel" hidden></section>
+      <section id="zug-neu" class="karte neu" aria-label="Seit deinem letzten Besuch" hidden></section>
       <div id="zug-lage" class="karte lage" hidden></div>
 
       <div class="abschnitt-kopf">
@@ -92,6 +106,7 @@
         <p class="hinweis">Kreis anklicken = erledigt. Das steht sofort in <code>roadmap.json</code>; „Rückgängig“ in der Meldung unten nimmt es zurück.</p>
       </div>
       <div id="aufgaben-liste"></div>
+      <div id="nachzug-box"></div>
       <div id="zuletzt-box"></div>
     </section>
 
@@ -102,6 +117,7 @@
       </div>
       <div id="roadmap-gesamt"></div>
       <div id="roadmap-fluss"></div>
+      <div id="roadmap-probe"></div>
       <div id="roadmap-meilensteine" class="meilensteine"></div>
       <div id="roadmap-ready-box"></div>
       <div id="roadmap-extra"></div>
@@ -111,10 +127,10 @@
       <div class="filter">
         <div class="suchfeld">
           <span data-icon="suche"></span>
-          <input id="thread-suche" type="search" placeholder="Threads durchsuchen …  ( / )" aria-label="Threads durchsuchen">
+          <input id="thread-suche" type="search" placeholder="Titel und Text durchsuchen …  ( / )" aria-label="Titel und Text durchsuchen">
         </div>
         <label class="haken-text"><input type="checkbox" class="schalter" id="nur-offene" checked> nur offene</label>
-        <span class="meta" id="thread-anzahl"></span>
+        <span class="meta" id="thread-anzahl" aria-live="polite"></span>
       </div>
       <div id="thread-liste" class="thread-liste"></div>
     </section>
@@ -129,10 +145,12 @@
     <span id="fuss-quelle"></span>
     <span>Token bleibt in diesem Browser</span>
     <span id="fuss-stand"></span>
+    <span id="fuss-rest"></span>
   </footer>
 
   <div id="meldung" class="meldung" role="status" aria-live="polite" hidden></div>
+  <dialog id="waechter" class="dialog" aria-labelledby="waechter-titel"></dialog>
 
-  <script src="app.js?v=2026.10.03-6"></script>
+  <script src="app.js?v=2026.10.03-24"></script>
 </body>
 </html>
