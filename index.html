@@ -16,10 +16,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0e131a" media="(prefers-color-scheme: dark)">
-  <meta name="pult-version" content="2026.10.03-14">
-  <link rel="manifest" href="manifest.webmanifest?v=2026.10.03-14">
-  <link rel="stylesheet" href="style.css?v=2026.10.03-14">
-  <script src="thema.js?v=2026.10.03-14"></script>
+  <meta name="pult-version" content="2026.10.03-15">
+  <link rel="manifest" href="manifest.webmanifest?v=2026.10.03-15">
+  <link rel="stylesheet" href="style.css?v=2026.10.03-15">
+  <script src="thema.js?v=2026.10.03-15"></script>
 </head>
 <body>
   <header class="kopf">
@@ -125,10 +125,10 @@
       <div class="filter">
         <div class="suchfeld">
           <span data-icon="suche"></span>
-          <input id="thread-suche" type="search" placeholder="Threads durchsuchen …  ( / )" aria-label="Threads durchsuchen">
+          <input id="thread-suche" type="search" placeholder="Titel und Text durchsuchen …  ( / )" aria-label="Titel und Text durchsuchen">
         </div>
         <label class="haken-text"><input type="checkbox" class="schalter" id="nur-offene" checked> nur offene</label>
-        <span class="meta" id="thread-anzahl"></span>
+        <span class="meta" id="thread-anzahl" aria-live="polite"></span>
       </div>
       <div id="thread-liste" class="thread-liste"></div>
     </section>
@@ -149,6 +149,6 @@
   <div id="meldung" class="meldung" role="status" aria-live="polite" hidden></div>
   <dialog id="waechter" class="dialog" aria-labelledby="waechter-titel"></dialog>
 
-  <script src="app.js?v=2026.10.03-14"></script>
+  <script src="app.js?v=2026.10.03-15"></script>
 </body>
 </html>

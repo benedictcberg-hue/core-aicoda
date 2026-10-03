@@ -15,6 +15,7 @@ const KOPF = /^\*\*\[([a-z0-9_-]+)\/([a-z0-9_-]+)\]\*\* (\S+)$/;
 const TOKEN_SCHLUESSEL = "core-pult-token";
 const THEMA_SCHLUESSEL = "core-pult-thema";
 const ENTWURF_SCHLUESSEL = "core-pult-entwuerfe";
+const LESEMODUS_SCHLUESSEL = "core-pult-lesemodus";
 const ZWEIG = new URLSearchParams(location.search).get("branch") || "main";
 const SEITENTITEL = document.title;
 
@@ -194,8 +195,10 @@ function heute() {
   return `${d.getFullYear()}-${zwei(d.getMonth() + 1)}-${zwei(d.getDate())}`;
 }
 function zeitLesbar(iso) {
-  const d = new Date(iso.replace(/Z$/, ":00Z"));
-  if (isNaN(d)) return iso;
+  // Blöcke tragen Minuten (…T01:45Z), das Archiv Sekunden (…T16:35:03Z)
+  const s = String(iso || "");
+  const d = new Date(/T\d{2}:\d{2}Z$/.test(s) ? s.replace(/Z$/, ":00Z") : s);
+  if (isNaN(d)) return s;
   return d.toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 function datumLesbar(tag) {
@@ -2409,36 +2412,500 @@ function punktZeile(q, offeneSlugs) {
 
 /* --- Threads --- */
 
+/* Was die Seite aus Forum-Text ableitet (Archiv-Teile, Suchtexte), liegt je Blob-sha nur im
+ * Speicher: kein localStorage, Abmelden leert beides. */
+const archivSpeicher = new Map();
+const suchSpeicher = new Map();
+function speicherKappen(speicher) {
+  if (speicher.size < zustand.threads.length + 20) return;
+  const lebend = new Set(zustand.threads.map((t) => t.sha));
+  for (const k of [...speicher.keys()]) if (!lebend.has(k)) speicher.delete(k);
+}
+
+/* Textsuche: Wörter mit UND, "Phrase" in Anführungszeichen. Je Wort ein RegExp, umlaut-tolerant
+ * („loeschen“ trifft „löschen“ und umgekehrt). */
+function suchMuster(eingabe) {
+  const woerter = [];
+  const teile = /"([^"]*)"?|(\S+)/g;
+  let m;
+  while ((m = teile.exec(String(eingabe || "")))) {
+    const w = (m[1] !== undefined ? m[1] : m[2].replace(/"/g, "")).trim();
+    if (w) woerter.push(w);
+  }
+  return woerter.slice(0, 12).map((w) => {
+    let s = w.toLowerCase().replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss");
+    s = s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    s = s.replace(/ae/g, "(?:ae|ä)").replace(/oe/g, "(?:oe|ö)").replace(/ue/g, "(?:ue|ü)").replace(/ss/g, "(?:ss|ß)");
+    s = s.replace(/\s+/g, "\\s+");
+    return { wort: w, re: new RegExp(s, "iu"), alle: new RegExp(s, "giu") };
+  });
+}
+
+/* Jede Stelle, an der ein Thread Text trägt, mit Sprungmarke (Archiv-Teil oder Block). */
+function suchQuellen(t) {
+  if (t.sha && suchSpeicher.has(t.sha)) return suchSpeicher.get(t.sha);
+  const quellen = [];
+  const teile = archivTeile(t);
+  if (teile) {
+    for (const x of teile) if (x.roh) quellen.push({ text: x.roh, anker: x.anker, wo: `${x.name} · Archiv · ${datumLesbar(x.zeit)}` });
+  } else if (t.vorgeschichte) {
+    quellen.push({ text: t.vorgeschichte, anker: null, wo: "Archiv" });
+  }
+  const anker = blockAnker(t);
+  for (const b of t.bloecke) quellen.push({ text: b.text, anker: anker.get(b), wo: `${b.ki}/${b.chat} · ${b.sorte} · ${datumLesbar(b.zeit)}` });
+  const aus = { kopf: Object.entries(t.kopf).map(([k, v]) => `${k}: ${v}`).join("\n"), quellen };
+  if (t.sha) { speicherKappen(suchSpeicher); suchSpeicher.set(t.sha, aus); }
+  return aus;
+}
+
+function threadSuchen(t, muster) {
+  const { kopf, quellen } = suchQuellen(t);
+  const titel = `${t.slug} ${t.titel}`;
+  for (const mu of muster) {
+    if (!mu.re.test(titel) && !mu.re.test(kopf) && !quellen.some((q) => mu.re.test(q.text))) return null;
+  }
+  let stellen = 0;
+  for (const text of [kopf, ...quellen.map((q) => q.text)]) {
+    for (const mu of muster) {
+      mu.alle.lastIndex = 0;
+      while (mu.alle.exec(text)) stellen++;
+    }
+  }
+  // Ausschnitte: zuerst Stellen mit allen Wörtern, dann mit dem ersten; je Thread höchstens zwei
+  const mitAllen = quellen.filter((q) => muster.every((mu) => mu.re.test(q.text)));
+  const mitErstem = quellen.filter((q) => !mitAllen.includes(q) && muster[0].re.test(q.text));
+  return { t, titelTreffer: muster.every((mu) => mu.re.test(titel)), stellen, ausschnitte: mitAllen.concat(mitErstem).slice(0, 2) };
+}
+
+/* ±60 Zeichen um die erste Stelle des ersten Worts, an Wortgrenzen geschnitten. */
+function ausschnitt(text, muster) {
+  const m0 = muster[0].re.exec(text);
+  if (!m0) return "";
+  const von = Math.max(0, m0.index - 200);
+  const bis = Math.min(text.length, m0.index + m0[0].length + 200);
+  // Fett- und Code-Zeichen stören im Ausschnitt nur; ohne sie bleibt der Treffer aber auffindbar
+  const fenster = text.slice(von, bis).replace(/\s+/g, " ");
+  const ohneZeichen = fenster.replace(/\*\*|`+/g, "");
+  const flach = muster[0].re.test(ohneZeichen) ? ohneZeichen : fenster;
+  const m = muster[0].re.exec(flach);
+  if (!m) return "";
+  let a = Math.max(0, m.index - 60);
+  let e = Math.min(flach.length, m.index + m[0].length + 60);
+  if (a > 0) { const l = flach.indexOf(" ", a); if (l >= 0 && l < m.index) a = l + 1; }
+  if (e < flach.length) { const l = flach.lastIndexOf(" ", e); if (l > m.index + m[0].length) e = l; }
+  return `${von > 0 || a > 0 ? "…" : ""}${flach.slice(a, e).trim()}${bis < text.length || e < flach.length ? "…" : ""}`;
+}
+
+/* Suchwörter als <mark>, gebaut aus Textknoten. */
+function markiert(text, muster) {
+  if (!muster || !muster.length) return [text];
+  const bereiche = [];
+  for (const mu of muster) {
+    mu.alle.lastIndex = 0;
+    let m;
+    while ((m = mu.alle.exec(text))) bereiche.push([m.index, m.index + m[0].length]);
+  }
+  bereiche.sort((x, y) => x[0] - y[0]);
+  const aus = [];
+  let pos = 0;
+  for (const [a, e] of bereiche) {
+    if (e <= pos) continue;
+    const start = Math.max(a, pos);
+    const letzte = aus[aus.length - 1];
+    if (start === pos && letzte instanceof Node && letzte.nodeName === "MARK") letzte.textContent += text.slice(start, e);
+    else {
+      if (start > pos) aus.push(text.slice(pos, start));
+      aus.push(el("mark", { text: text.slice(start, e) }));
+    }
+    pos = e;
+  }
+  if (pos < text.length) aus.push(text.slice(pos));
+  return aus;
+}
+
+function threadZeile(t, muster) {
+  const l = t.letzter;
+  return el("a", { class: "thread-zeile" + (t.offen.length ? " hat-frage" : "") + (t.geschlossen ? " ist-zu" : ""), href: `#t/${encodeURIComponent(t.slug)}` },
+    el("span", { class: "thread-nr", text: t.nummer || "–" }),
+    el("span", { class: "thread-haupt" },
+      el("span", { class: "thread-titel" }, markiert(t.titel, muster)),
+      el("span", { class: "thread-letzt", text: l ? `zuletzt ${l.sorte} · ${l.ki}/${l.chat} · ${zeitLesbar(l.zeit)}` : (t.kopf.Aktualisiert ? `Archiv · ${t.kopf.Aktualisiert.slice(0, 10)}` : "Archiv") })),
+    el("span", { class: "thread-rechts" },
+      threadIstNeu(t) ? el("span", { class: "marke neu" }, icon("funke"), "neu") : null,
+      t.offen.length ? el("span", { class: "marke zug" }, icon("rueckfrage"), "Frage an dich") : null,
+      t.art ? el("span", { class: "marke", text: t.art }) : null,
+      el("span", { class: `marke ${t.geschlossen ? "ok" : "offen"}`, text: t.geschlossen ? "geschlossen" : "offen" })));
+}
+
+/* Links in Links sind nicht erlaubt: Zeile und Ausschnitte stehen nebeneinander in einem div. */
+function trefferZeile(r, muster) {
+  return el("div", { class: "thread-treffer" }, threadZeile(r.t, muster),
+    r.ausschnitte.length ? el("ul", { class: "treffer-stellen" }, r.ausschnitte.map((q) => el("li", {},
+      el("a", { class: "treffer-stelle", href: `#t/${encodeURIComponent(r.t.slug)}${q.anker ? "~" + q.anker : ""}` },
+        el("span", { class: "treffer-wo", text: `${q.wo} – ` }),
+        el("span", { class: "treffer-text" }, markiert(ausschnitt(q.text, muster), muster)))))) : null);
+}
+
+let suchTimer = null;
+function anzahlSetzen(text) {
+  const z = $("thread-anzahl");
+  if (z.textContent !== text) z.textContent = text;   // aria-live: nur echte Änderungen ansagen
+}
+
 function threadListeZeichnen() {
-  const suche = $("thread-suche").value.trim().toLowerCase();
+  const muster = suchMuster($("thread-suche").value);
   const nurOffene = $("nur-offene").checked;
   const liste = $("thread-liste");
   liste.replaceChildren();
-  const treffer = zustand.threads.filter((t) =>
-    (!nurOffene || !t.geschlossen || t.offen.length)
-    && (!suche || (t.slug + " " + t.titel).toLowerCase().includes(suche)));
-  $("thread-anzahl").textContent = anzahl(treffer.length, "Thread", "Threads");
-  if (!treffer.length) liste.append(leer("suche", "Kein Thread passt.", nurOffene ? "„nur offene“ abschalten zeigt auch geschlossene." : null));
-  for (const t of treffer) {
-    const l = t.letzter;
-    liste.append(el("a", { class: "thread-zeile" + (t.offen.length ? " hat-frage" : "") + (t.geschlossen ? " ist-zu" : ""), href: `#t/${encodeURIComponent(t.slug)}` },
-      el("span", { class: "thread-nr", text: t.nummer || "–" }),
-      el("span", { class: "thread-haupt" },
-        el("span", { class: "thread-titel", text: t.titel }),
-        el("span", { class: "thread-letzt", text: l ? `zuletzt ${l.sorte} · ${l.ki}/${l.chat} · ${zeitLesbar(l.zeit)}` : (t.kopf.Aktualisiert ? `Archiv · ${t.kopf.Aktualisiert.slice(0, 10)}` : "Archiv") })),
-      el("span", { class: "thread-rechts" },
-        threadIstNeu(t) ? el("span", { class: "marke neu" }, icon("funke"), "neu") : null,
-        t.offen.length ? el("span", { class: "marke zug" }, icon("rueckfrage"), "Frage an dich") : null,
-        t.art ? el("span", { class: "marke", text: t.art }) : null,
-        el("span", { class: `marke ${t.geschlossen ? "ok" : "offen"}`, text: t.geschlossen ? "geschlossen" : "offen" }))));
+  const sichtbar = (t) => !nurOffene || !t.geschlossen || t.offen.length > 0;
+  if (!muster.length) {
+    const treffer = zustand.threads.filter(sichtbar);
+    anzahlSetzen(anzahl(treffer.length, "Thread", "Threads"));
+    if (!treffer.length) liste.append(leer("suche", "Kein Thread passt.", nurOffene ? "„nur offene“ abschalten zeigt auch geschlossene." : null));
+    for (const t of treffer) liste.append(threadZeile(t));
+    return;
+  }
+  const alle = [];
+  for (const t of zustand.threads) {
+    const r = threadSuchen(t, muster);
+    if (r) alle.push(r);
+  }
+  alle.sort((a, b) => (b.titelTreffer - a.titelTreffer) || (b.stellen - a.stellen) || ((Number(b.t.nummer) || 0) - (Number(a.t.nummer) || 0)));
+  const treffer = alle.filter((r) => sichtbar(r.t));
+  const verborgen = alle.length - treffer.length;
+  anzahlSetzen(`${anzahl(treffer.length, "Thread", "Threads")}, ${anzahl(treffer.reduce((s, r) => s + r.stellen, 0), "Stelle", "Stellen")}`);
+  if (verborgen) {
+    liste.append(el("p", { class: "treffer-zu" }, icon("info"), el("span", {}, `+${verborgen} Treffer in geschlossenen Threads · `,
+      el("button", {
+        type: "button", class: "knopf-link", "data-fokus": "treffer-zu",
+        onclick: () => { $("nur-offene").checked = false; threadListeZeichnen(); $("nur-offene").focus(); },
+      }, "zeigen"))));
+  }
+  if (!treffer.length) liste.append(leer("suche", "Nichts gefunden.", "Wörter gelten mit UND, \"in Anführungszeichen\" als Phrase."));
+  for (const r of treffer.slice(0, 60)) liste.append(trefferZeile(r, muster));
+  if (treffer.length > 60) liste.append(el("p", { class: "hinweis", text: `60 von ${treffer.length} Threads gezeigt – Suche eingrenzen.` }));
+}
+
+/* Rahmen, Spalten, Einzug: als Monospace stehen lassen. Zeilen über 400 Zeichen sind nie
+ * Tabellen; der Rest linear prüfen (kein .*\s{3,} mehr). */
+function istBreit(zeilen) {
+  return zeilen.some((z) => z.length <= 400
+    && (/[┌└│─+|]{3,}/.test(z) || (/^\s{2,}\S/.test(z) && /\S\s{3,}\S/.test(z.trimStart()))));
+}
+function textBlock(text) {
+  return el("pre", { class: "text" + (istBreit(text.split("\n")) ? " breit" : ""), text });
+}
+
+/* ---------- Lesemodus: Markdown der KIs als gesetzter Text ----------
+ * Nur el() und Textknoten, nie innerHTML. Block-Regeln gelten am Zeilenanfang; jede Regel
+ * läuft linear (fremde Inhalte dürfen das Pult nicht einfrieren). */
+
+let lesemodus = (() => { try { return localStorage.getItem(LESEMODUS_SCHLUESSEL) === "roh" ? "roh" : "gesetzt"; } catch (_) { return "gesetzt"; } })();
+
+const MD_ZAUN = /^( {0,3})(`{3,})(.*)$/;
+const MD_TITEL = /^ {0,3}(#{1,6})[ \t]+(\S.*)$/;
+const MD_PUNKT = /^( {0,3})([-*])[ \t]+(\S.*)$/;
+const MD_NUMMER = /^( {0,3})(\d{1,9})([.)])[ \t]+(\S.*)$/;
+const MD_ZITAT = /^ {0,3}>/;
+const MD_LINIE = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})[ \t]*$/;
+const MD_LINK = /\[([^[\]\n]{1,300})\]\((https:\/\/[^\s()<>"]{1,2000})\)/y;
+const NACKT_URL = /https:\/\/[^\s<>"`]{1,2000}/y;
+const LESE_TIEFE = 6;   // Listen und Zitate in Listen und Zitaten: höchstens so tief
+
+function urlGeprueft(u) {
+  try { return new URL(u).protocol === "https:"; } catch (_) { return false; }
+}
+/* Schließende Satzzeichen gehören nicht zur Adresse; eine Klammer nur, wenn sie offen war. */
+function urlKuerzen(u) {
+  let e = u.length;
+  while (e > 8) {
+    const c = u[e - 1];
+    if (".,;:!?'\"»«“”„‘’*_".includes(c)) { e--; continue; }
+    const auf = c === ")" ? "(" : c === "]" ? "[" : c === "}" ? "{" : "";
+    if (auf) {
+      const s = u.slice(0, e);
+      if (s.split(auf).length < s.split(c).length) { e--; continue; }
+    }
+    break;
+  }
+  return u.slice(0, e);
+}
+function verweisAussen(href, text) {
+  return el("a", { href, target: "_blank", rel: "noopener noreferrer" }, text);
+}
+
+/* Inline: `code`, **fett**, [Text](https://…), https://…. Kein Kursiv: ein * im Fließtext ist zu
+ * oft wörtlich gemeint. Ein Zeichen ohne Gegenstück merkt sich das, damit nichts quadratisch sucht. */
+function inline(text, ohneFett) {
+  const frag = document.createDocumentFragment();
+  const s = String(text);
+  const n = s.length;
+  const ohneGegenstueck = new Set();
+  let i = 0;
+  let rest = 0;
+  const roh = (bis) => { if (bis > rest) frag.append(document.createTextNode(s.slice(rest, bis))); };
+  while (i < n) {
+    const c = s.charCodeAt(i);
+    if (c === 96) {
+      let j = i + 1;
+      while (j < n && s.charCodeAt(j) === 96) j++;
+      const zu = ohneGegenstueck.has(j - i) ? -1 : s.indexOf(s.slice(i, j), j);
+      if (zu < 0) { ohneGegenstueck.add(j - i); i = j; continue; }
+      let code = s.slice(j, zu);
+      if (code.length > 2 && code[0] === " " && code[code.length - 1] === " " && code.trim()) code = code.slice(1, -1);
+      roh(i);
+      frag.append(el("code", { text: code }));
+      i = rest = zu + (j - i);
+      continue;
+    }
+    if (c === 42 && !ohneFett && s.charCodeAt(i + 1) === 42) {
+      const zu = ohneGegenstueck.has("**") ? -1 : s.indexOf("**", i + 2);
+      if (zu < 0) { ohneGegenstueck.add("**"); i += 2; continue; }
+      const innen = s.slice(i + 2, zu);
+      if (innen.trim() && innen === innen.trim()) {
+        roh(i);
+        frag.append(el("strong", {}, inline(innen, true)));
+        i = rest = zu + 2;
+        continue;
+      }
+      i += 2;
+      continue;
+    }
+    if (c === 91) {
+      MD_LINK.lastIndex = i;
+      const m = MD_LINK.exec(s);
+      if (m && urlGeprueft(m[2])) {
+        roh(i);
+        frag.append(verweisAussen(m[2], m[1]));
+        i = rest = i + m[0].length;
+        continue;
+      }
+    } else if (c === 104 && s.startsWith("https://", i)) {
+      NACKT_URL.lastIndex = i;
+      const m = NACKT_URL.exec(s);
+      const url = m ? urlKuerzen(m[0]) : "";
+      if (url.length > 8 && urlGeprueft(url)) {
+        roh(i);
+        frag.append(verweisAussen(url, url));
+        i = rest = i + url.length;
+        continue;
+      }
+    }
+    i++;
+  }
+  roh(n);
+  return frag;
+}
+/* Mehrzeilig: die KIs schreiben zeilenweise, also wird jeder Umbruch ein <br>. */
+function zeilenSetzen(text) {
+  const frag = document.createDocumentFragment();
+  String(text).split("\n").forEach((z, k) => {
+    if (k) frag.append(el("br"));
+    frag.append(inline(z.trim()));
+  });
+  return frag;
+}
+
+function einzugWeg(z, k) {
+  let i = 0;
+  while (i < k && i < z.length && z[i] === " ") i++;
+  return z.slice(i);
+}
+const tabsWeg = (z) => z.replace(/^\t+/, (t) => "    ".repeat(t.length));
+const einzugVon = (z) => z.length - z.trimStart().length;
+
+function zellenTeilen(z) {
+  const s = z.trim();
+  const zellen = [];
+  let akt = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "\\" && s[i + 1] === "|") { akt += "|"; i++; } else if (c === "|") { zellen.push(akt); akt = ""; } else akt += c;
+  }
+  zellen.push(akt);
+  if (s.startsWith("|")) zellen.shift();
+  if (s.length > 1 && s.endsWith("|") && !s.endsWith("\\|")) zellen.pop();
+  return zellen;
+}
+function istTrennzeile(z) {
+  if (z.indexOf("|") < 0 || z.indexOf("-") < 0) return false;
+  const zellen = zellenTeilen(z);
+  return zellen.length > 0 && zellen.every((c) => /^:?-+:?$/.test(c.trim()));
+}
+const istTabellenStart = (zeilen, i) => /^ {0,3}\|/.test(zeilen[i]) && i + 1 < zeilen.length && istTrennzeile(zeilen[i + 1]);
+function istZaun(z) {
+  const m = MD_ZAUN.exec(z);
+  return m && !m[3].includes("`") ? m : null;
+}
+function unterbricht(zeilen, i, tiefe) {
+  const z = zeilen[i];
+  if (istZaun(z) || MD_LINIE.test(z) || MD_TITEL.test(z) || istTabellenStart(zeilen, i)) return true;
+  if (tiefe >= LESE_TIEFE) return false;
+  const nr = MD_NUMMER.exec(z);
+  return MD_ZITAT.test(z) || MD_PUNKT.test(z) || (!!nr && nr[2] === "1");
+}
+
+function absatzSetzen(zeilen) {
+  if (istBreit(zeilen)) return el("pre", { class: "text breit", text: zeilen.join("\n") });
+  if (zeilen.every((z) => /^(?: {4}|\t)/.test(z))) return el("pre", { class: "text breit", text: zeilen.map((z) => einzugWeg(tabsWeg(z), 4)).join("\n") });
+  const p = el("p");
+  zeilen.forEach((z, k) => {
+    if (k) p.append(el("br"));
+    p.append(inline(z.trim()));
+  });
+  return p;
+}
+
+function tabelleSetzen(zeilen, i, ziel) {
+  const kopf = zellenTeilen(zeilen[i]);
+  const ausrichtung = zellenTeilen(zeilen[i + 1]).map((c) => {
+    const s = c.trim();
+    return s.endsWith(":") ? (s.startsWith(":") ? "mitte" : "rechts") : null;
+  });
+  i += 2;
+  const reihen = [];
+  while (i < zeilen.length && /^ {0,3}\|/.test(zeilen[i])) reihen.push(zellenTeilen(zeilen[i++]));
+  const zelle = (tag, inhalt, k) => el(tag, { class: ausrichtung[k] || null, scope: tag === "th" ? "col" : null }, inline(inhalt.trim()));
+  const tabelle = el("table", {},
+    el("thead", {}, el("tr", {}, kopf.map((c, k) => zelle("th", c, k)))),
+    reihen.length ? el("tbody", {}, reihen.map((r) => {
+      while (r.length < kopf.length) r.push("");
+      return el("tr", {}, r.map((c, k) => zelle("td", c, k)));
+    })) : null);
+  // Es scrollt nur die Tabelle, nie die Seite; tabindex, damit die Tastatur mitscrollt.
+  ziel.append(el("div", { class: "tabelle", tabindex: "0", role: "region", "aria-label": "Tabelle" }, tabelle));
+  return i;
+}
+
+function listeSetzen(zeilen, i, ziel, tiefe) {
+  const n = zeilen.length;
+  const erste = MD_NUMMER.exec(zeilen[i]);
+  const muster = erste ? MD_NUMMER : MD_PUNKT;
+  const liste = el(erste ? "ol" : "ul");
+  if (erste && erste[2] !== "1") liste.setAttribute("start", String(parseInt(erste[2], 10)));
+  while (i < n) {
+    const m = muster.exec(zeilen[i]);
+    if (!m) break;
+    const text = m[m.length - 1];
+    const basis = m[1].length;
+    const inhaltAb = zeilen[i].length - text.length;
+    const gehoertDazu = (z) => einzugVon(tabsWeg(z)) >= basis + 2;
+    const inhalt = [text];
+    i++;
+    // Folgezeilen mit mindestens 2 Leerzeichen Einzug gehören zum Punkt, auch nach einer Leerzeile
+    while (i < n) {
+      if (zeilen[i].trim()) {
+        if (!gehoertDazu(zeilen[i])) break;
+        inhalt.push(einzugWeg(tabsWeg(zeilen[i]), inhaltAb));
+        i++;
+        continue;
+      }
+      let j = i;
+      while (j < n && !zeilen[j].trim()) j++;
+      if (j >= n || !gehoertDazu(zeilen[j])) break;
+      for (; i < j; i++) inhalt.push("");
+    }
+    const li = el("li");
+    bloeckeSetzen(inhalt, li, tiefe + 1);
+    if (li.childNodes.length === 1 && li.firstChild.nodeName === "P") li.replaceChildren(...li.firstChild.childNodes);
+    liste.append(li);
+    let j = i;
+    while (j < n && !zeilen[j].trim()) j++;
+    if (j > i && j < n && muster.test(zeilen[j])) i = j;
+  }
+  ziel.append(liste);
+  return i;
+}
+
+function bloeckeSetzen(zeilen, ziel, tiefe) {
+  const n = zeilen.length;
+  let i = 0;
+  while (i < n) {
+    const z = zeilen[i];
+    if (!z.trim()) { i++; continue; }
+    let m;
+    if ((m = istZaun(z))) {
+      const laenge = m[2].length;
+      const inhalt = [];
+      for (i++; i < n; i++) {
+        const t = zeilen[i].trim();
+        if (t.length >= laenge && /^`+$/.test(t) && einzugVon(zeilen[i]) < 4) break;
+        inhalt.push(einzugWeg(zeilen[i], m[1].length));
+      }
+      i++;
+      ziel.append(el("pre", { class: "text breit", text: inhalt.join("\n") }));
+      continue;
+    }
+    if (MD_LINIE.test(z)) { ziel.append(el("hr")); i++; continue; }
+    if ((m = MD_TITEL.exec(z))) {
+      // „## Titel ##“: schließende Rauten weg (von Hand, ohne Regex mit Rückschritten)
+      let t = m[2].trimEnd();
+      let e = t.length;
+      while (e > 0 && t[e - 1] === "#") e--;
+      if (e < t.length && (e === 0 || t[e - 1] === " " || t[e - 1] === "\t")) t = t.slice(0, e).trimEnd();
+      // # → h3, ## und tiefer → h4: die h2 bleibt dem Thread-Titel
+      ziel.append(el(m[1].length === 1 ? "h3" : "h4", {}, inline(t || m[2])));
+      i++;
+      continue;
+    }
+    if (istTabellenStart(zeilen, i)) { i = tabelleSetzen(zeilen, i, ziel); continue; }
+    if (tiefe < LESE_TIEFE && MD_ZITAT.test(z)) {
+      const innen = [];
+      while (i < n && MD_ZITAT.test(zeilen[i])) innen.push(zeilen[i++].replace(/^ {0,3}> ?/, ""));
+      const zitat = el("blockquote");
+      bloeckeSetzen(innen, zitat, tiefe + 1);
+      ziel.append(zitat);
+      continue;
+    }
+    if (tiefe < LESE_TIEFE && (MD_PUNKT.test(z) || MD_NUMMER.test(z))) { i = listeSetzen(zeilen, i, ziel, tiefe); continue; }
+    const absatz = [];
+    while (i < n && zeilen[i].trim() && !(absatz.length && unterbricht(zeilen, i, tiefe))) absatz.push(zeilen[i++]);
+    ziel.append(absatzSetzen(absatz));
   }
 }
 
-function textBlock(text) {
-  // Zeilen über 400 Zeichen sind nie Tabellen; der Rest linear prüfen (kein .*\s{3,} mehr).
-  const breit = text.split("\n").some((z) => z.length <= 400
-    && (/[┌└│─+|]{3,}/.test(z) || (/^\s{2,}\S/.test(z) && /\S\s{3,}\S/.test(z.trimStart()))));
-  return el("pre", { class: "text" + (breit ? " breit" : ""), text });
+function lesetext(text) {
+  const frag = document.createDocumentFragment();
+  bloeckeSetzen(String(text).replace(/\r\n?/g, "\n").split("\n"), frag, 0);
+  return frag;
+}
+const lesetextBox = (text) => el("div", { class: "lesetext" }, lesetext(text));
+
+/* ---------- Archiv in Beiträgen ----------
+ * Die Vorgeschichte (Import aus bsvp-forum-zugang) trennt Kommentare mit
+ *   ---
+ *   Kommentar: <name> <zeit>
+ *   <https-Link>
+ * Ein Teil beginnt meist mit der Signatur **[perplexity]** <Rest der Zeile>. */
+const ARCHIV_TRENNER = /^---\nKommentar: (\S+) (\S+)\n(https:\/\/\S+)\n/m;
+const ARCHIV_SIGNATUR = /^\*\*\[([^\]\n]+)\]\*\*[ \t]*(.*)$/;
+
+function archivTeil(stueck, name, zeit, link) {
+  const roh = stueck.replace(/^(?:[ \t]*\n)+/, "").trimEnd();
+  const zeilen = roh.split("\n");
+  const sig = ARCHIV_SIGNATUR.exec(zeilen[0] || "");
+  return {
+    name: sig ? sig[1].trim() : name || "Eröffnung",
+    untertitel: sig ? sig[2].replace(/^[·\s]+/, "").trim() : "",
+    zeit: String(zeit || ""),
+    link: urlGeprueft(link) ? link : "",
+    roh,
+    text: sig ? zeilen.slice(1).join("\n").replace(/^(?:[ \t]*\n)+/, "") : roh,
+    signiert: !!sig,
+  };
+}
+
+/* null = Muster passt nicht (dann bleibt der Kasten „Vorgeschichte“). */
+function archivTeile(t) {
+  if (!t.vorgeschichte) return null;
+  if (t.sha && archivSpeicher.has(t.sha)) return archivSpeicher.get(t.sha);
+  const stuecke = t.vorgeschichte.split(ARCHIV_TRENNER);   // [Eröffnung, name, zeit, link, Teil 1, …]
+  const teile = [archivTeil(stuecke[0], "", t.kopf.Angelegt, t.kopf.Quelle)];
+  for (let k = 1; k + 3 < stuecke.length; k += 4) teile.push(archivTeil(stuecke[k + 3], stuecke[k], stuecke[k + 1], stuecke[k + 2]));
+  teile.forEach((x, n) => { x.anker = `a${n}`; });
+  const aus = teile.length > 1 || teile[0].signiert ? teile : null;
+  if (t.sha) { speicherKappen(archivSpeicher); archivSpeicher.set(t.sha, aus); }
+  return aus;
 }
 
 function avatarKlasse(ki) {
@@ -2454,6 +2921,148 @@ function sorteMarke(sorte) {
   return el("span", { class: `marke ${art}`.trim(), text: sorte });
 }
 
+/* Ein Beitrag im Verlauf. „Rohtext“ zeigt das textBlock-<pre> byte-gleich; Zustand je Anker
+ * in zustand.offen, sonst gilt der Lesemodus aus dem Thread-Kopf. */
+function blockArtikel({ t, anker, klasse, avatar, kuerzel, kopf, werkzeug, roh, gesetzt, name }) {
+  const schl = `roh:${t.slug}~${anker}`;
+  const istRoh = () => (zustand.offen.has(schl) ? zustand.offen.get(schl) : lesemodus === "roh");
+  const inhalt = el("div", { class: "block-text" });
+  const knopf = el("button", {
+    type: "button", class: "roh-knopf", "data-fokus": schl,
+    "aria-label": `Rohtext: ${name}`, title: "So zeigen, wie es in der Datei steht",
+  }, icon("code"), "Rohtext");
+  const fuellen = () => {
+    const r = istRoh();
+    knopf.setAttribute("aria-pressed", r ? "true" : "false");
+    inhalt.replaceChildren(r ? textBlock(roh) : gesetzt());
+  };
+  knopf.addEventListener("click", () => { zustand.offen.set(schl, !istRoh()); fuellen(); });
+  fuellen();
+  return el("article", { class: `block ${klasse}`, "data-anker": anker, id: `anker-${anker}`, tabindex: "-1" },
+    el("span", { class: `block-avatar ${avatar}`, "aria-hidden": "true", text: kuerzel }),
+    el("div", { class: "karte block-inhalt" },
+      el("div", { class: "block-kopf" }, kopf, el("span", { class: "block-werkzeug" }, werkzeug, knopf)),
+      inhalt));
+}
+
+function archivBlock(t, x) {
+  return blockArtikel({
+    t, anker: x.anker, klasse: "s-archiv", name: `${x.name}, Archiv ${zeitLesbar(x.zeit)}`,
+    avatar: avatarKlasse(x.name.toLowerCase().replace(/[\s·]+/g, "-")), kuerzel: x.name.slice(0, 1).toUpperCase(),
+    kopf: [
+      el("span", { class: "block-sig", text: x.name }),
+      el("span", { class: "marke leise", text: "Archiv" }),
+      x.zeit ? el("time", { class: "meta", title: "Zeit der Übertragung ins alte Forum, nicht der Schreibzeit", text: zeitLesbar(x.zeit) }) : null,
+    ],
+    werkzeug: x.link ? el("a", { class: "block-quelle", href: x.link, target: "_blank", rel: "noopener noreferrer" }, "auf GitHub") : null,
+    roh: x.roh,
+    gesetzt: () => el("div", { class: "lesetext" },
+      x.untertitel ? el("p", { class: "block-untertitel" }, inline(x.untertitel)) : null,
+      lesetext(x.text)),
+  });
+}
+
+/* Betreiber-Antworten beginnen mit „Zu FRAGE [ki/chat] zeit“. Gibt es mehrere FRAGEn mit
+ * gleicher Zeit (029: drei um 02:31), entscheidet der Text der gewählten Vorschlags-Zeile. */
+const ZU_FRAGE = /^Zu FRAGE \[([a-z0-9_-]+)\/([a-z0-9_-]+)\] (\S+)\s*$/;
+const WAHL = /^Wahl: (?:Vorschlag ([A-Z]): (.*)|eigene Antwort)\s*$/;
+function antwortenZuordnen(t) {
+  const frageVon = new Map();    // Betreiber-Block -> FRAGE-Block (null: nicht gefunden)
+  const antwortZu = new Map();   // FRAGE-Block -> letzte Wahl {block, buchstabe, eigen}
+  t.bloecke.forEach((b, i) => {
+    if (b.ki !== ICH.ki) return;
+    const zeilen = b.text.split("\n");
+    const m = ZU_FRAGE.exec(zeilen[0] || "");
+    if (!m) return;
+    const w = WAHL.exec(zeilen[1] || "");
+    let kandidaten = t.bloecke.slice(0, i).filter((x) => x.sorte === "FRAGE" && x.ki === m[1] && x.chat === m[2] && x.zeit === m[3]);
+    if (kandidaten.length > 1 && w && w[1]) {
+      const passend = kandidaten.filter((x) => frageParsen(x).vorschlaege.some((v) => v.buchstabe === w[1] && v.text.trim() === w[2].trim()));
+      if (passend.length) kandidaten = passend;
+    }
+    const frage = kandidaten.length ? kandidaten[kandidaten.length - 1] : null;
+    frageVon.set(b, frage);
+    if (frage && w) antwortZu.set(frage, { block: b, buchstabe: w[1] || "", eigen: !w[1] });
+  });
+  return { frageVon, antwortZu };
+}
+
+function frageLesen(t, b, anker, bezug) {
+  const f = frageParsen(b);
+  const antwort = bezug.antwortZu.get(b);
+  const aus = el("div", { class: "lesetext frage-lese" },
+    el("h3", { class: "frage-lese-titel" }, zeilenSetzen(f.frage || t.titel)),
+    f.kontext ? lesetext(f.kontext) : null,
+    f.roadmap.length ? el("div", { class: "marken" }, f.roadmap.map((r) => el("span", { class: "marke", text: r }))) : null);
+  if (t.offen.includes(b)) {
+    // Die Vorschläge stehen in der Antwortkarte darunter: hier nicht noch einmal.
+    aus.append(el("p", { class: "frage-offen" }, icon("rueckfrage"),
+      el("span", {}, "Offen – die Antwortkarte steht unten. ",
+        el("a", { href: `#t/${encodeURIComponent(t.slug)}~${anker}-antwort` }, "Zur Antwortkarte"))));
+    return aus;
+  }
+  if (f.vorschlaege.length) {
+    aus.append(el("ol", { class: "vorschlaege-lese" }, f.vorschlaege.map((v) => {
+      const gewaehlt = !!antwort && antwort.buchstabe === v.buchstabe;
+      const empfohlen = v.buchstabe === f.empfohlen;
+      return el("li", { class: "vorschlag-lese" + (gewaehlt ? " ist-gewaehlt" : "") + (empfohlen ? " ist-empfohlen" : "") },
+        el("span", { class: "vorschlag-buchstabe", text: v.buchstabe }),
+        el("span", { class: "vorschlag-text" }, inline(v.text),
+          empfohlen || gewaehlt ? el("span", { class: "vorschlag-marken" },
+            empfohlen ? el("span", { class: "empfohlen" }, icon("stern"), "Empfehlung") : null,
+            gewaehlt ? el("span", { class: "marke ok" }, icon("haken"), "gewählt") : null) : null));
+    })));
+  }
+  if (antwort && antwort.eigen) aus.append(el("p", { class: "wahl-eigen" }, icon("notiz"), "eigene Antwort"));
+  if (f.empfehlung) aus.append(el("p", { class: "empfehlung" }, icon("stern"), el("span", {}, el("b", { text: "Empfehlung: " }), inline(f.empfehlung))));
+  if (antwort) {
+    aus.append(el("p", { class: "frage-bezug" },
+      el("a", { href: ankerLink(t, antwort.block) }, `↓ zur Antwort (${antwort.block.sorte}, ${zeitLesbar(antwort.block.zeit)})`)));
+  }
+  return aus;
+}
+
+function antwortLesen(t, b, frage) {
+  const zeilen = b.text.split("\n");
+  const aus = el("div", { class: "lesetext antwort-lese" },
+    el("p", { class: "frage-bezug" }, frage
+      ? el("a", { href: ankerLink(t, frage) }, `↑ zur Frage (${frage.ki}/${frage.chat}, ${zeitLesbar(frage.zeit)})`)
+      : zeilen[0]));
+  let i = 1;
+  let m;
+  if ((m = /^Wahl: (.+)$/.exec(zeilen[i] || ""))) { aus.append(el("p", { class: "wahl" }, "Wahl: ", el("strong", {}, inline(m[1])))); i++; }
+  else if ((zeilen[i] || "").trim() === "Rückfrage") { aus.append(el("p", { class: "wahl" }, el("strong", { text: "Rückfrage" }))); i++; }
+  // Angabe-Zeilen (Pfad:, Termin:, Anzahl:, Angabe:) direkt nach der Wahl
+  const angaben = [];
+  while (i < zeilen.length && (m = /^(Pfad|Termin|Anzahl|Angabe): (.*)$/.exec(zeilen[i]))) {
+    angaben.push(el("dt", { text: m[1] }), el("dd", { class: m[1] === "Pfad" ? "mono" : null, text: m[2] }));
+    i++;
+  }
+  if (angaben.length) aus.append(el("dl", { class: "angaben" }, angaben));
+  const rest = zeilen.slice(i).join("\n").trim();
+  if (rest) aus.append(lesetext(rest));
+  return aus;
+}
+
+function neuerBlock(t, b, anker, bezug) {
+  const neu = istNeuerBlock(b);
+  const gesetzt = b.sorte === "FRAGE" ? () => frageLesen(t, b, anker, bezug)
+    : bezug.frageVon.has(b) ? () => antwortLesen(t, b, bezug.frageVon.get(b))
+      : () => lesetextBox(b.text);
+  return blockArtikel({
+    t, anker, klasse: `s-${b.sorte}${neu ? " ist-neu" : ""}`, name: `${b.ki}/${b.chat}, ${b.sorte} ${zeitLesbar(b.zeit)}`,
+    avatar: avatarKlasse(b.ki), kuerzel: b.ki.slice(0, 1).toUpperCase(),
+    kopf: [
+      el("span", { class: "block-sig", text: `${b.ki}/${b.chat}` }),
+      sorteMarke(b.sorte),
+      neu ? el("span", { class: "marke neu" }, icon("funke"), "neu") : null,
+      el("time", { class: "meta", text: zeitLesbar(b.zeit) }),
+    ],
+    roh: b.text,
+    gesetzt,
+  });
+}
+
 function threadDetailZeichnen(slug) {
   const ziel = $("thread-detail");
   ziel.replaceChildren();
@@ -2465,37 +3074,56 @@ function threadDetailZeichnen(slug) {
     if (k === "Titel") continue;
     kopfzeilen.append(el("dt", { text: k }), el("dd", { text: v }));
   }
+  const rohSchalter = el("input", { type: "checkbox", class: "schalter", "data-fokus": "lesemodus" });
+  rohSchalter.checked = lesemodus === "roh";
+  rohSchalter.addEventListener("change", () => {
+    lesemodus = rohSchalter.checked ? "roh" : "gesetzt";
+    try { localStorage.setItem(LESEMODUS_SCHLUESSEL, lesemodus); } catch (_) { /* gesperrt: gilt bis zum Neuladen */ }
+    for (const k of [...zustand.offen.keys()]) if (k.startsWith("roh:")) zustand.offen.delete(k);
+    mitFokus(() => threadDetailZeichnen(slug));
+  });
   ziel.append(el("div", { class: "karte thread-kopf" },
     el("div", { class: "thread-kopf-zeile" },
       el("span", { class: "thread-nr", text: t.nummer || "–" }),
       el("h2", { text: t.titel }),
       el("span", { class: `marke ${t.geschlossen ? "ok" : "offen"}`, text: t.geschlossen ? "geschlossen" : "offen" })),
-    kopfzeilen));
+    kopfzeilen,
+    el("div", { class: "lese-leiste" }, el("label", { class: "haken-text" }, rohSchalter, "Alles als Rohtext"))));
 
-  if (t.vorgeschichte) {
+  const teile = archivTeile(t);
+  if (t.vorgeschichte && !teile) {
     const d = el("details", { class: "karte mehr" },
       el("summary", {}, icon("runter", "chevron"), t.bloecke.length ? "Vorgeschichte (Archiv aus bsvp-forum-zugang)" : "Inhalt (Archiv aus bsvp-forum-zugang)"),
-      textBlock(t.vorgeschichte));
+      lesemodus === "roh" ? textBlock(t.vorgeschichte) : lesetextBox(t.vorgeschichte));
     ziel.append(aufklappen(d, `vorgeschichte:${t.slug}`, !t.bloecke.length));
   }
-  if (t.bloecke.length) {
-    const anker = blockAnker(t);
-    ziel.append(el("div", { class: "verlauf" }, t.bloecke.map((b) =>
-      el("article", {
-        class: `block s-${b.sorte}${istNeuerBlock(b) ? " ist-neu" : ""}`,
-        "data-anker": anker.get(b), id: `anker-${anker.get(b)}`, tabindex: "-1",
-      },
-        el("span", { class: `block-avatar ${avatarKlasse(b.ki)}`, "aria-hidden": "true", text: b.ki.slice(0, 1).toUpperCase() }),
-        el("div", { class: "karte block-inhalt" },
-          el("div", { class: "block-kopf" },
-            el("span", { class: "block-sig", text: `${b.ki}/${b.chat}` }),
-            sorteMarke(b.sorte),
-            istNeuerBlock(b) ? el("span", { class: "marke neu" }, icon("funke"), "neu") : null,
-            el("time", { class: "meta", text: zeitLesbar(b.zeit) })),
-          textBlock(b.text))))));
+  const verlauf = el("div", { class: "verlauf" });
+  if (teile) {
+    const artikel = teile.filter((x) => x.roh).map((x) => archivBlock(t, x));
+    if (artikel.length >= 8) {
+      const n = artikel.length - 5;
+      verlauf.append(aufklappen(el("details", { class: "aeltere" },
+        el("summary", {},
+          el("span", { class: "aeltere-punkt", "aria-hidden": "true" }, icon("runter", "chevron")),
+          el("span", {}, `Ältere ${n} Beiträge `, el("span", { class: "wenn-zu", text: "zeigen" }), el("span", { class: "wenn-offen", text: "ausblenden" }))),
+        el("div", { class: "aeltere-liste" }, artikel.slice(0, n))), `aeltere:${t.slug}`, false), ...artikel.slice(n));
+    } else {
+      verlauf.append(...artikel);
+    }
   }
-  angabenFehltZeichnen(t, blockAnker(t));
-  for (const q of offeneFragen().filter((x) => x.thread === t)) ziel.append(frageKarte(q));
+  const anker = blockAnker(t);
+  const bezug = antwortenZuordnen(t);
+  for (const b of t.bloecke) verlauf.append(neuerBlock(t, b, anker.get(b), bezug));
+  if (verlauf.childNodes.length) ziel.append(verlauf);
+  for (const q of offeneFragen().filter((x) => x.thread === t)) {
+    const karte = frageKarte(q);
+    const a = `${anker.get(q.block)}-antwort`;
+    karte.id = `anker-${a}`;
+    karte.dataset.anker = a;
+    karte.tabIndex = -1;
+    ziel.append(karte);
+  }
+  angabenFehltZeichnen(t, anker);
   ziel.append(beitragForm(t));
 }
 
@@ -2598,7 +3226,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-14";
+const FASSUNG = "2026.10.03-15";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
@@ -2695,6 +3323,10 @@ function verdrahten() {
       } catch (_) { /* gesperrt */ }
     }
     for (const k of Object.keys(entwuerfe)) delete entwuerfe[k];
+    archivSpeicher.clear();
+    suchSpeicher.clear();
+    clearTimeout(suchTimer);
+    lesemodus = "gesetzt";
     zustand.token = "";
     zustand.threads = [];
     zustand.roadmap = null;
@@ -2721,8 +3353,21 @@ function verdrahten() {
     zeigen("anmeldung");
   });
   $("neu-laden").addEventListener("click", () => starten());
-  $("thread-suche").addEventListener("input", threadListeZeichnen);
+  // Textsuche: 150 ms Ruhe nach dem letzten Zeichen; Enter oder Leeren (×) sofort
+  $("thread-suche").addEventListener("input", () => {
+    clearTimeout(suchTimer);
+    suchTimer = setTimeout(threadListeZeichnen, 150);
+  });
+  $("thread-suche").addEventListener("search", () => { clearTimeout(suchTimer); threadListeZeichnen(); });
   $("nur-offene").addEventListener("change", threadListeZeichnen);
+  // Ein Sprunglink auf die Adresse, die schon gilt, löst kein hashchange aus: trotzdem springen.
+  document.addEventListener("click", (e) => {
+    const a = e.target && e.target.closest ? e.target.closest('a[href^="#t/"]') : null;
+    if (!a || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    if (a.hash !== location.hash || !a.hash.includes("~")) return;
+    e.preventDefault();
+    ankerSpringen(decodeURIComponent(a.hash.slice(1)).split("~")[1]);
+  });
   window.addEventListener("hashchange", () => {
     // Dieselbe Frage-Karte steht auch in der Thread-Ansicht: Entwürfe von dort mitnehmen.
     if (hatDaten()) mitFokus(fragenZeichnen);
