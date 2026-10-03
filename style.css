@@ -2,7 +2,7 @@
  * Farben nur als Tokens; hell, dunkel (System oder Schalter) und Windows-Kontrastmodus. */
 
 :root {
-  --pult-version: "2026.10.03-11";
+  --pult-version: "2026.10.03-13";
   --grund: #f3f5f8;
   --flaeche: #ffffff;
   --flaeche-2: #f2f5f9;
@@ -109,7 +109,7 @@
 /* ---------- Grundlagen ---------- */
 
 *, *::before, *::after { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; scroll-padding-top: 130px; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 130px; scrollbar-gutter: stable; }
 body {
   margin: 0;
   min-height: 100vh;
@@ -184,7 +184,7 @@ b, strong { font-weight: 650; }
   line-height: 1.6; font-variant-numeric: tabular-nums;
 }
 .zaehler.leise { background: var(--flaeche-3); color: var(--text-leise); }
-.zaehler.heiss { background: var(--zug); color: #fff; }
+.zaehler.heiss { background: var(--zug); color: var(--akzent-text); }
 .zaehler:empty { display: none; }
 
 .pille {
@@ -230,7 +230,7 @@ input[type="password"], input[type="search"], input[type="text"], textarea, sele
   background: var(--flaeche); color: var(--text); font: inherit;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-input::placeholder, textarea::placeholder { color: var(--text-blass); }
+input::placeholder, textarea::placeholder { color: var(--text-leise); }
 input:hover, textarea:hover, select:hover { border-color: var(--text-blass); }
 input[type="password"]:focus-visible, input[type="search"]:focus-visible, input[type="text"]:focus-visible,
 textarea:focus-visible, select:focus-visible {
@@ -243,7 +243,7 @@ textarea { min-height: 72px; resize: vertical; line-height: 1.5; }
 /* Schalter statt Häkchen-Kästchen */
 .schalter {
   appearance: none; -webkit-appearance: none; position: relative; flex: none; margin: 0; cursor: pointer;
-  width: 36px; height: 20px; border-radius: 99px; background: var(--linie-stark);
+  width: 36px; height: 20px; border-radius: 99px; background: var(--text-blass);
   transition: background 0.15s;
 }
 .schalter::before {
@@ -313,6 +313,7 @@ a.marke:hover { filter: brightness(0.96); }
 
 details > summary { list-style: none; cursor: pointer; }
 details > summary::-webkit-details-marker { display: none; }
+details > summary:focus-visible { outline-offset: -3px; border-radius: inherit; }
 .chevron { color: var(--text-blass); transition: transform 0.2s; }
 details[open] > summary .chevron { transform: rotate(180deg); }
 
@@ -369,7 +370,7 @@ details[open] > summary .chevron { transform: rotate(180deg); }
 
 /* ---------- Seit deinem letzten Besuch ---------- */
 
-.neu { margin-bottom: 14px; padding: 16px 18px; border-color: color-mix(in srgb, var(--akzent) 35%, var(--linie)); }
+.karte.neu { margin-bottom: 14px; padding: 16px 18px; border-color: color-mix(in srgb, var(--akzent) 35%, var(--linie)); }
 .neu-kopf { display: flex; align-items: center; gap: 12px; }
 .neu-kopf-text { flex: 1; min-width: 0; }
 .neu-kopf h2 { font-size: 1.02rem; }
@@ -472,7 +473,7 @@ input[type="date"] {
 .haken svg { width: 26px; height: 26px; overflow: visible; }
 .haken.klein svg { width: 21px; height: 21px; }
 .haken:focus-visible { outline-offset: -1px; }
-.haken-ring { fill: var(--flaeche); stroke: var(--linie-stark); stroke-width: 1.7; transition: fill 0.15s, stroke 0.15s; }
+.haken-ring { fill: var(--flaeche); stroke: var(--text-blass); stroke-width: 1.7; transition: fill 0.15s, stroke 0.15s; }
 .haken-strich {
   fill: none; stroke: var(--ok-voll); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round;
   stroke-dasharray: 16; stroke-dashoffset: 16; opacity: 0; transition: stroke-dashoffset 0.2s, opacity 0.15s;
@@ -673,7 +674,7 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
   flex: 1; font-weight: 650; font-size: 0.9rem; line-height: 1.3; overflow: hidden;
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
 }
-.fluss-nach { color: var(--text-blass); font-size: 0.74rem; font-family: var(--mono); }
+.fluss-nach { color: var(--text-leise); font-size: 0.74rem; font-family: var(--mono); }
 .fluss-flaeche .fluss-nach { display: none; }
 .fluss-fuss { display: flex; align-items: center; gap: 8px; }
 
@@ -702,7 +703,7 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
 .punkt-farbe { display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--linie-stark); }
 .punkt-farbe.fertig { background: var(--ok-voll); }
 .punkt-farbe.teil { background: var(--teil); }
-.fluss-quelle { color: var(--text-blass); }
+.fluss-quelle { color: var(--text-leise); }
 .mermaid-box { margin-top: 10px; }
 .mermaid-box > summary { display: inline-flex; align-items: center; gap: 6px; color: var(--text-leise); font-size: 0.86rem; font-weight: 600; }
 .mermaid-box > summary:hover { color: var(--text); }
@@ -777,7 +778,7 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
 .fuss {
   display: flex; flex-wrap: wrap; gap: 4px 18px; justify-content: center;
   width: 100%; max-width: var(--breite); margin: 0 auto; padding: 14px 16px 24px;
-  color: var(--text-blass); font-size: 0.8rem; border-top: 1px solid var(--linie);
+  color: var(--text-leise); font-size: 0.8rem; border-top: 1px solid var(--linie);
 }
 
 .meldung {
@@ -852,6 +853,12 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
   .meldung { bottom: 12px; }
 }
 
+@media (max-width: 420px) {
+  .kopf-unter { display: none; }
+  .reiter a { padding: 8px 8px 9px; }
+  .reiter .zaehler.leise { display: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
@@ -877,4 +884,6 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
   .fluss-knoten.kritisch { border-color: Highlight; }
   .logo-grund { fill: CanvasText; }
   .logo-strich, .logo-haken { stroke: Canvas; }
+  .reiter a.aktiv { border-bottom-color: Highlight; color: Highlight; }
+  .meldung { border: 1px solid CanvasText; }
 }

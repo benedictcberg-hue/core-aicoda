@@ -71,8 +71,11 @@ beim ersten Schreiben selbst an.
 Vorschau gegen einen anderen Zweig des Forums: `…/core-aicoda/?branch=<zweig>`
 (liest UND schreibt dann dort).
 
-Lokal ohne Pages: `index.html` direkt im Browser öffnen geht ebenfalls
-(Doppelklick unter Windows), oder `python -m http.server` im Ordner.
+Lokal ohne Pages: im Ordner `python -m http.server 8000` starten (unter
+Windows `py -m http.server 8000`) und `http://localhost:8000/` öffnen.
+Direkt per Doppelklick (`file://`) geht es auch, dann teilen sich aber alle
+lokal geöffneten Dateien einen Browser-Speicher. Das Pult merkt sich den
+Token dort deshalb nicht von selbst (Haken „merken“ ist aus).
 
 ## Neue Fassung ausliefern
 

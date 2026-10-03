@@ -151,7 +151,13 @@ function entwurf(schluessel) {
   return Object.prototype.hasOwnProperty.call(entwuerfe, schluessel) ? entwuerfe[schluessel] : "";
 }
 function entwuerfeSichern() {
-  try { sessionStorage.setItem(ENTWURF_SCHLUESSEL, JSON.stringify(entwuerfe)); } catch (_) { /* voll oder gesperrt */ }
+  const text = JSON.stringify(entwuerfe);
+  try { sessionStorage.setItem(ENTWURF_SCHLUESSEL, text); return; } catch (_) { /* voll oder gesperrt */ }
+  // Voll: der Blob-Zwischenspeicher lässt sich neu laden, ein Entwurf nicht.
+  try {
+    for (const k of Object.keys(sessionStorage)) if (k.startsWith("blob:")) sessionStorage.removeItem(k);
+    sessionStorage.setItem(ENTWURF_SCHLUESSEL, text);
+  } catch (_) { /* gesperrt */ }
 }
 function entwurfSetzen(schluessel, wert) {
   if (wert === "" || wert === null || wert === undefined) delete entwuerfe[schluessel];
@@ -244,6 +250,7 @@ function melden(text, optionen) {
   }
   kinder.push(el("button", { type: "button", class: "meldung-zu", "aria-label": "Meldung schließen", title: "Schließen", onclick: meldungZu }, icon("x")));
   m.replaceChildren(...kinder);
+  // Auch eine frisch auftauchende Meldung: sie erscheint dort, wo gerade geklickt wird.
   meldungSeit = Date.now();
   meldungFokus = o.fokus || null;
   m.className = "meldung" + (o.fehler ? " fehler" : "");
@@ -470,7 +477,13 @@ function hatDaten() {
   return zustand.threads.length > 0 || !!zustand.roadmap;
 }
 
-async function laden() {
+// Ein Lauf zur Zeit: Puls, Fokus und Knopf riefen sonst parallel und überholten sich.
+let ladeVersprechen = null;
+function laden() {
+  if (!ladeVersprechen) ladeVersprechen = ladenEcht().finally(() => { ladeVersprechen = null; });
+  return ladeVersprechen;
+}
+async function ladenEcht() {
   // Ein Haken, der gerade geschrieben wird, soll nicht von einem älteren Stand überholt werden.
   await roadmapKette;
   const token = zustand.token;
@@ -686,7 +699,10 @@ function mitFokus(zeichnen, gewuenscht) {
   try {
     if (aktiv && typeof aktiv.selectionStart === "number") auswahl = [aktiv.selectionStart, aktiv.selectionEnd];
   } catch (_) { /* Feldart ohne Auswahl */ }
-  zeichnen();
+  // Höhe halten, solange neu gezeichnet wird: sonst springt die Seite beim Abhaken nach oben.
+  const main = $("inhalt");
+  main.style.minHeight = `${main.offsetHeight}px`;
+  try { zeichnen(); } finally { main.style.minHeight = ""; }
   if (!gewuenscht && (!schluessel || (aktiv && aktiv.isConnected))) return;
   for (const kandidat of [gewuenscht, schluessel, zustand.fokusNach]) {
     const ziel = sichtbarFinden(kandidat);
@@ -2542,7 +2558,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-11";
+const FASSUNG = "2026.10.03-13";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
@@ -2595,6 +2611,8 @@ function verdrahten() {
   }
   for (const e of document.querySelectorAll("[data-icon-nach]")) e.append(icon(e.dataset.iconNach));
   themaAnwenden();
+  // Unter file:// teilen sich alle lokalen Dateien einen Speicher: Token dort nicht merken.
+  if (location.protocol === "file:") $("token-merken").checked = false;
 
   $("thema").addEventListener("click", () => {
     const i = THEMEN.findIndex((x) => x.wert === thema);
