@@ -28,7 +28,17 @@ const zustand = {
   laufend: new Map(),   // Punkt-ID -> Zielstatus, solange der Haken geschrieben wird
   offen: new Map(),     // auf-/zugeklappte Bereiche, überlebt das Neuzeichnen
   fokusNach: null,      // data-fokus-Schlüssel für den Fokus, wenn das fokussierte Element verschwindet
+  schreibt: new Set(),  // Thread-Pfade, an die gerade angehängt wird (Knöpfe bleiben gesperrt, auch nach Neuzeichnen)
 };
+
+/* Während laden() läuft: was seit Ladebeginn geschrieben wurde. Das ist neuer als der Baum,
+ * den laden() am Anfang gelesen hat, und darf am Ende nicht überschrieben werden. */
+let ladeLauf = null;
+
+/* Ein Fehler, den der Betreiber so lesen soll, wie er ist (ohne „Nicht geschrieben: …“). */
+class Hinweis extends Error {}
+/* Abgemeldet, während ein Schreibvorgang lief: still beenden. */
+class Abgebrochen extends Error {}
 
 /* ---------- kleine Helfer ---------- */
 
@@ -186,26 +196,46 @@ function bewegungAus() {
 /* ---------- Meldung (unten, mit optionaler Aktion wie „Rückgängig“) ---------- */
 
 let meldungTimer = null;
+let meldungSeit = 0;          // letzter Inhaltswechsel: ein Klick kurz danach galt der vorigen Meldung
+let meldungFokus = null;      // data-fokus-Schlüssel, der den Fokus bekommt, wenn die Meldung ihn hatte
 function meldungZu() {
   clearTimeout(meldungTimer);
-  $("meldung").hidden = true;
+  const m = $("meldung");
+  const hatteFokus = m.contains(document.activeElement);
+  m.hidden = true;
+  if (hatteFokus) {
+    const ziel = sichtbarFinden(meldungFokus) || $("inhalt");
+    ziel.focus({ preventScroll: true });
+  }
 }
 function meldungSpaeterZu(ms) {
   clearTimeout(meldungTimer);
+  const m = $("meldung");
+  // Liegt Maus oder Fokus auf der Meldung, wartet sie; mouseleave/focusout starten neu.
+  if (m.matches(":hover") || m.contains(document.activeElement)) return;
   meldungTimer = setTimeout(meldungZu, ms);
 }
 function melden(text, optionen) {
   const o = optionen && typeof optionen === "object" ? optionen : { fehler: !!optionen };
   const m = $("meldung");
-  m.replaceChildren(
+  const kinder = [
     icon(o.fehler ? "warnung" : "ok", "meldung-ic"),
     el("span", { class: "meldung-text", text }),
-    o.aktion ? el("button", {
-      type: "button", class: "meldung-aktion",
-      onclick: () => { meldungZu(); o.aktion.tun(); },
-    }, icon(o.aktion.icon || "undo"), o.aktion.text) : null,
-    el("button", { type: "button", class: "meldung-zu", "aria-label": "Meldung schließen", title: "Schließen", onclick: meldungZu }, icon("x")),
-  );
+  ];
+  if (o.aktion) {
+    kinder.push(el("button", {
+      type: "button", class: "meldung-aktion", "aria-label": o.aktion.label || o.aktion.text,
+      onclick: () => {
+        if (Date.now() - meldungSeit < 600) return;
+        meldungZu();
+        o.aktion.tun();
+      },
+    }, icon(o.aktion.icon || "undo"), o.aktion.text));
+  }
+  kinder.push(el("button", { type: "button", class: "meldung-zu", "aria-label": "Meldung schließen", title: "Schließen", onclick: meldungZu }, icon("x")));
+  m.replaceChildren(...kinder);
+  meldungSeit = Date.now();
+  meldungFokus = o.fokus || null;
   m.className = "meldung" + (o.fehler ? " fehler" : "");
   m.hidden = false;
   m.dataset.dauer = String(o.fehler ? 9000 : o.aktion ? 10000 : 4000);
@@ -251,10 +281,21 @@ async function dateiSchreiben(pfad, text, sha, meldung) {
 
 const istKonflikt = (e) => e instanceof GitHubFehler && (e.status === 409 || e.status === 422);
 
+/* Steht genau dieser Beitrag schon als letzter Block da (eigener Block, gleiche Sorte, gleicher
+ * Text, jünger als 15 Minuten)? Dann kam ein früherer Versuch an, nur die Antwort ging verloren. */
+function schonAngehaengt(text, sorte, inhalt) {
+  const l = threadParsen("pruefung", text).letzter;
+  if (!l || l.ki !== ICH.ki || l.chat !== ICH.chat || l.sorte !== sorte || l.text !== inhalt.trim()) return false;
+  const zeit = new Date(l.zeit.replace(/Z$/, ":00Z"));
+  return !isNaN(zeit) && Date.now() - zeit.getTime() < 15 * 60 * 1000;
+}
+
 /* Liest frisch, hängt an, schreibt. Bei Konflikt (jemand schrieb dazwischen) einmal neu. */
-async function anhaengen(pfad, block, meldung) {
+async function anhaengen(pfad, sorte, inhalt, meldung) {
+  const block = blockText(sorte, inhalt);
   for (let versuch = 0; versuch < 3; versuch++) {
     const { text, sha } = await dateiLesen(pfad);
+    if (schonAngehaengt(text, sorte, inhalt)) return { text, sha, schonDa: true };
     const neu = (text.endsWith("\n") ? text : text + "\n") + block;
     try {
       const neuSha = await dateiSchreiben(pfad, neu, sha, meldung);
@@ -380,6 +421,9 @@ function hatDaten() {
 async function laden() {
   // Ein Haken, der gerade geschrieben wird, soll nicht von einem älteren Stand überholt werden.
   await roadmapKette;
+  const token = zustand.token;
+  const lauf = { threads: new Map(), roadmap: false };
+  ladeLauf = lauf;
   const erstesMal = !hatDaten();
   const knopf = $("neu-laden");
   if (erstesMal) zeigen("lade");
@@ -407,20 +451,33 @@ async function laden() {
       const slug = e.path.slice("threads/".length, -4);
       return { ...threadParsen(slug, text), pfad: e.path, sha: e.sha };
     });
-    zustand.threads = (await alles(auftraege, 8)).sort((a, b) => b.slug.localeCompare(a.slug));
+    const threads = (await alles(auftraege, 8)).sort((a, b) => b.slug.localeCompare(a.slug));
 
-    zustand.roadmap = null;
+    // Netz- oder HTTP-Fehler beim Blob gehen an starten() („Neu laden fehlgeschlagen“, alter Stand bleibt).
+    let roadmap = null;
+    let roadmapSha = null;
+    let kaputt = null;
     if (roadmapDatei) {
-      try {
-        zustand.roadmap = JSON.parse(await blobLesen(roadmapDatei.sha));
-        zustand.roadmapSha = roadmapDatei.sha;
-      } catch (e) {
-        melden("roadmap.json ist kein gültiges JSON: " + e.message, true);
-      }
+      const roh = await blobLesen(roadmapDatei.sha);
+      try { roadmap = JSON.parse(roh); roadmapSha = roadmapDatei.sha; } catch (e) { kaputt = e; }
       fortschritt();
+    }
+    if (zustand.token !== token) return;
+
+    // Während des Ladens Geschriebenes ist neuer als der Baum vom Anfang.
+    zustand.threads = threads.map((t) => lauf.threads.get(t.pfad) || t);
+    for (const [pfad, t] of lauf.threads) if (!zustand.threads.some((x) => x.pfad === pfad)) zustand.threads.unshift(t);
+    if (lauf.roadmap) {
+      // zustand.roadmap ist schon der frische Stand aus dem Schreibvorgang
+    } else if (kaputt) {
+      melden(`roadmap.json ist kein gültiges JSON: ${kaputt.message}${zustand.roadmap ? " — angezeigt wird der letzte gute Stand." : ""}`, true);
+    } else {
+      zustand.roadmap = roadmap;
+      zustand.roadmapSha = roadmapSha;
     }
     zustand.geladen = new Date();
   } finally {
+    if (ladeLauf === lauf) ladeLauf = null;
     knopf.removeAttribute("aria-busy");
     knopf.disabled = false;
   }
@@ -431,9 +488,6 @@ async function laden() {
   pille.className = "pille " + (ZWEIG === "main" ? "ok" : "zweig");
   pille.title = `${OWNER}/${REPO} @ ${ZWEIG}`;
   for (const id of ["verbindung", "neu-laden", "abmelden", "reiter", "fuss"]) $(id).hidden = false;
-  if (zustand.roadmap) {
-    $("kopf-unter").textContent = `Roadmap-Stand ${datumLesbar(zustand.roadmap.stand) || "?"} · ${zustand.roadmap.basis || ""}`;
-  }
   const uhr = zustand.geladen.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
   $("fuss-quelle").textContent = `${REPO} @ ${ZWEIG}`;
   $("fuss-stand").textContent = `geladen ${uhr}`;
@@ -441,10 +495,17 @@ async function laden() {
   allesZeichnen();
 }
 
+function kopfSetzen() {
+  if (zustand.roadmap) {
+    $("kopf-unter").textContent = `Roadmap-Stand ${datumLesbar(zustand.roadmap.stand) || "?"} · ${zustand.roadmap.basis || ""}`;
+  }
+}
+
 function threadErsetzen(pfad, text, sha) {
   const slug = pfad.slice("threads/".length, -4);
   const neu = { ...threadParsen(slug, text), pfad, sha };
   blobMerken(sha, text);
+  if (ladeLauf) ladeLauf.threads.set(pfad, neu);
   const i = zustand.threads.findIndex((t) => t.pfad === pfad);
   if (i >= 0) zustand.threads[i] = neu; else zustand.threads.unshift(neu);
   allesZeichnen();
@@ -519,6 +580,7 @@ function mitFokus(zeichnen, gewuenscht) {
 
 function allesZeichnen() {
   mitFokus(() => {
+    kopfSetzen();
     fragenZeichnen();
     zugRoadmapZeichnen();
     roadmapZeichnen();
@@ -531,6 +593,7 @@ function allesZeichnen() {
 /* Nach einem Haken: nur was an roadmap.json hängt. Fragen und Thread-Ansicht bleiben stehen. */
 function roadmapTeileZeichnen(gewuenscht) {
   mitFokus(() => {
+    kopfSetzen();
     zugRoadmapZeichnen();
     roadmapZeichnen();
     zaehlerSetzen();
@@ -613,34 +676,51 @@ function nacheinander(arbeit) {
   return lauf;
 }
 
-function eintragFinden(rm, id, art) {
-  if (art === "ready") return (rm.ready || []).find((r) => r.id === id) || null;
-  for (const m of rm.meilensteine || []) for (const p of m.punkte || []) if (p.id === id) return p;
-  return null;
+function eintraegeFinden(rm, id, art) {
+  if (art === "ready") return (rm.ready || []).filter((r) => r.id === id);
+  const treffer = [];
+  for (const m of rm.meilensteine || []) for (const p of m.punkte || []) if (p.id === id) treffer.push(p);
+  return treffer;
 }
+const hakenFelder = (eintrag) => {
+  const aus = {};
+  for (const f of HAKEN_FELDER) if (Object.prototype.hasOwnProperty.call(eintrag, f)) aus[f] = eintrag[f];
+  return aus;
+};
 
 async function roadmapAendern(id, art, aendern, betreff) {
+  const token = zustand.token;
+  const uebernehmen = (rm, sha) => {
+    if (zustand.token !== token) throw new Abgebrochen();
+    zustand.roadmap = rm;
+    zustand.roadmapSha = sha;
+    if (ladeLauf) ladeLauf.roadmap = true;
+  };
   for (let versuch = 0; versuch < 3; versuch++) {
     const { text, sha } = await dateiLesen("roadmap.json");
     const rm = JSON.parse(text);
-    const eintrag = eintragFinden(rm, id, art);
-    if (!eintrag) throw new Error(`${id} steht nicht mehr in roadmap.json`);
-    const vorher = {};
-    for (const f of HAKEN_FELDER) if (Object.prototype.hasOwnProperty.call(eintrag, f)) vorher[f] = eintrag[f];
+    // Die KIs pflegen roadmap.json von Hand: eine doppelte ID darf nie still den falschen Punkt treffen.
+    const treffer = eintraegeFinden(rm, id, art);
+    if (treffer.length !== 1) {
+      throw new Hinweis(treffer.length ? `${id} steht ${treffer.length}-mal in roadmap.json – bitte dort bereinigen, nichts geschrieben.`
+        : `${id} steht nicht mehr in roadmap.json – „Neu laden“ zeigt den aktuellen Stand.`);
+    }
+    const eintrag = treffer[0];
+    const vorher = hakenFelder(eintrag);
     if (!aendern(eintrag)) {
       // Schon so, wie gewünscht (jemand war schneller): nichts schreiben, nur den frischen Stand zeigen.
-      zustand.roadmap = rm;
-      zustand.roadmapSha = sha;
-      return { vorher, geaendert: false };
+      uebernehmen(rm, sha);
+      return { vorher, nachher: vorher, geaendert: false };
     }
+    const nachher = hakenFelder(eintrag);
     const neu = JSON.stringify(rm, null, 2) + "\n";
     try {
       await gateSicherstellen();
-      const neuSha = await dateiSchreiben("roadmap.json", neu, sha, `roadmap: ${betreff} [${ICH.ki}/${ICH.chat}]`);
+      const titel = typeof betreff === "function" ? betreff(vorher) : betreff;
+      const neuSha = await dateiSchreiben("roadmap.json", neu, sha, `roadmap: ${titel} [${ICH.ki}/${ICH.chat}]`);
       blobMerken(neuSha, neu);
-      zustand.roadmap = rm;
-      zustand.roadmapSha = neuSha;
-      return { vorher, geaendert: true };
+      uebernehmen(rm, neuSha);
+      return { vorher, nachher, geaendert: true };
     } catch (e) {
       if (!istKonflikt(e) || versuch === 2) throw e;
     }
@@ -649,7 +729,13 @@ async function roadmapAendern(id, art, aendern, betreff) {
 }
 
 function schreibFehler(e) {
-  const hinweis = e instanceof GitHubFehler && (e.status === 403 || e.status === 404)
+  if (e instanceof Hinweis) { melden(e.message, true); return; }
+  if (!(e instanceof GitHubFehler)) {
+    // fetch selbst ist gescheitert: ob GitHub den Schreibvorgang noch angenommen hat, ist offen.
+    melden(`Verbindung abgerissen (${e.message}). Ob geschrieben wurde, ist unklar – bitte „Neu laden“ und nachsehen.`, true);
+    return;
+  }
+  const hinweis = e.status === 403 || e.status === 404
     ? " — hat das Token „Contents: Read and write“ auf CORE-Forum-?" : "";
   melden("Nicht geschrieben: " + e.message + hinweis, true);
 }
@@ -667,7 +753,8 @@ function wegAnimieren(id) {
 function naechsterFokus(id) {
   const knopf = sichtbarFinden(`haken:${id}`);
   const liste = knopf && knopf.closest("[data-hakenliste]");
-  if (!liste) return null;
+  // Nur in „Dein Zug“ verlässt der Punkt seine Liste; in der Roadmap bleibt er stehen.
+  if (!liste || !["aufgaben", "zuletzt"].includes(liste.dataset.hakenliste)) return null;
   const alle = [...liste.querySelectorAll(".haken")];
   const i = alle.indexOf(knopf);
   const nachbar = alle[i + 1] || alle[i - 1];
@@ -676,16 +763,24 @@ function naechsterFokus(id) {
 
 async function statusSchreiben({ id, art, ziel, aendern, betreff, erfolg }) {
   if (zustand.laufend.has(id)) return;
+  const token = zustand.token;
   zustand.fokusNach = naechsterFokus(id);
   zustand.laufend.set(id, ziel);
   roadmapTeileZeichnen();
   try {
     const ergebnis = await nacheinander(() => roadmapAendern(id, art, aendern, betreff));
     await wegAnimieren(id);
+    if (zustand.token !== token) return;
+    // Lag der Fokus auf diesem Kreis, geht er zum Nachbarn – auch wenn der Punkt in der
+    // aufgeklappten Liste „Zuletzt erledigt“ wieder auftaucht.
+    const aktiv = document.activeElement;
+    const weiter = zustand.fokusNach && aktiv && aktiv.dataset && aktiv.dataset.fokus === `haken:${id}` ? zustand.fokusNach : undefined;
     zustand.laufend.delete(id);
-    roadmapTeileZeichnen();
+    roadmapTeileZeichnen(weiter);
+    zustand.fokusNach = null;
     erfolg(ergebnis);
   } catch (e) {
+    if (e instanceof Abgebrochen || zustand.token !== token) return;
     zustand.laufend.delete(id);
     zustand.fokusNach = null;
     roadmapTeileZeichnen();
@@ -693,24 +788,42 @@ async function statusSchreiben({ id, art, ziel, aendern, betreff, erfolg }) {
   }
 }
 
+/* Notiz nur, wenn ihr Feld offen ist: was man nicht sieht, wird nicht geschrieben. */
+function notizBereit(id) {
+  const feld = `notizfeld:${id}`;
+  const offen = zustand.offen.has(feld) ? zustand.offen.get(feld) : !!entwurf(`notiz:${id}`);
+  return offen ? String(entwurf(`notiz:${id}`)).trim() : "";
+}
+
+function rueckgaengig(id, art, ergebnis) {
+  return { text: "Rückgängig", label: `${id} zurücknehmen`, tun: () => zuruecknehmen(id, art, ergebnis) };
+}
+
 function abhaken(eintrag, art) {
   const id = eintrag.id;
   const notizSchluessel = `notiz:${id}`;
-  const notiz = art === "punkt" ? String(entwurf(notizSchluessel)).trim() : "";
+  const notiz = art === "punkt" ? notizBereit(id) : "";
   statusSchreiben({
-    id, art, ziel: "x", betreff: `${id} erledigt`,
+    id, art, ziel: "x",
+    betreff: (vorher) => (vorher.status === "x" ? `${id} Notiz` : `${id} erledigt`),
     aendern: (p) => {
-      if (p.status === "x") return false;
+      if (p.status === "x") {
+        // Jemand war schneller: die getippte Notiz trotzdem nicht verlieren.
+        if (!notiz) return false;
+        p.notiz = p.notiz ? `${p.notiz} · ${notiz}` : notiz;
+        return true;
+      }
       p.status = "x";
       p.erledigt = heute();
       p.von = `${ICH.ki}/${ICH.chat}`;
       if (notiz) p.notiz = p.notiz ? `${p.notiz} · ${notiz}` : notiz;
       return true;
     },
-    erfolg: ({ vorher, geaendert }) => {
+    erfolg: (ergebnis) => {
+      if (!ergebnis.geaendert) { melden(`${id} war schon erledigt.`, { fokus: `haken:${id}` }); return; }
       if (notiz) { entwurfSetzen(notizSchluessel, ""); zustand.offen.delete(`notizfeld:${id}`); roadmapTeileZeichnen(); }
-      if (!geaendert) { melden(`${id} war schon erledigt.`); return; }
-      melden(`${id} abgehakt.`, { aktion: { text: "Rückgängig", tun: () => zuruecknehmen(id, art, vorher) } });
+      const text = ergebnis.vorher.status === "x" ? `${id} war schon erledigt – Notiz ergänzt.` : `${id} abgehakt.`;
+      melden(text, { aktion: rueckgaengig(id, art, ergebnis), fokus: `haken:${id}` });
     },
   });
 }
@@ -726,18 +839,24 @@ function wiederOeffnen(eintrag, art) {
       delete p.von;
       return true;
     },
-    erfolg: ({ vorher, geaendert }) => {
-      if (!geaendert) { melden(`${id} war schon offen.`); return; }
-      melden(`${id} wieder offen.`, { aktion: { text: "Rückgängig", tun: () => zuruecknehmen(id, art, vorher) } });
+    erfolg: (ergebnis) => {
+      if (!ergebnis.geaendert) { melden(`${id} war schon offen.`, { fokus: `haken:${id}` }); return; }
+      melden(`${id} wieder offen.`, { aktion: rueckgaengig(id, art, ergebnis), fokus: `haken:${id}` });
     },
   });
 }
 
-/* Stellt genau die Haken-Felder wieder her, wie sie vor dem Klick waren. */
-function zuruecknehmen(id, art, vorher) {
+/* Stellt genau die Haken-Felder wieder her, wie sie vor dem Klick waren – aber nur, wenn in
+ * der Datei noch steht, was der Klick geschrieben hat. Fremde Änderungen bleiben. */
+const gleicheFelder = (a, b) => HAKEN_FELDER.every((f) => Object.prototype.hasOwnProperty.call(a, f) === Object.prototype.hasOwnProperty.call(b, f) && a[f] === b[f]);
+
+function zuruecknehmen(id, art, { vorher, nachher }) {
   statusSchreiben({
     id, art, ziel: vorher.status || ".", betreff: `${id} zurückgenommen`,
     aendern: (p) => {
+      if (!gleicheFelder(hakenFelder(p), nachher)) {
+        throw new Hinweis(`${id} wurde inzwischen geändert – nicht zurückgenommen.`);
+      }
       let anders = false;
       for (const f of HAKEN_FELDER) {
         const hatte = Object.prototype.hasOwnProperty.call(vorher, f);
@@ -746,7 +865,7 @@ function zuruecknehmen(id, art, vorher) {
       }
       return anders;
     },
-    erfolg: () => melden(`${id} zurückgenommen.`),
+    erfolg: () => melden(`${id} zurückgenommen.`, { fokus: `haken:${id}` }),
   });
 }
 
@@ -995,14 +1114,16 @@ function frageKarte({ thread, block, f }) {
       text = `${bezug}\nWahl: ${v ? `Vorschlag ${v.buchstabe}: ${v.text}` : "eigene Antwort"}` + (zusatz ? `\n\n${zusatz}` : "");
       sorte = beschluss.checked ? "BESCHLUSS" : "ANTWORT";
     }
-    await schreibenMitKnopf([senden, zurueck], async () => {
-      await gateSicherstellen();
-      const r = await anhaengen(thread.pfad, blockText(sorte, text), `${thread.slug}: ${sorte} [${ICH.ki}/${ICH.chat}]`);
-      entwuerfeLoeschen(schl + ":");
-      threadErsetzen(thread.pfad, r.text, r.sha);
-      melden(`${sorte} in ${thread.slug} geschrieben.`);
+    await threadSchreiben(thread.pfad, [senden, zurueck], async () => {
+      const r = await anhaengen(thread.pfad, sorte, text, `${thread.slug}: ${sorte} [${ICH.ki}/${ICH.chat}]`);
+      return () => {
+        entwuerfeLoeschen(schl + ":");
+        threadErsetzen(thread.pfad, r.text, r.sha);
+        melden(r.schonDa ? `${sorte} stand schon in ${thread.slug} (früherer Versuch kam an).` : `${sorte} in ${thread.slug} geschrieben.`);
+      };
     });
   };
+  sperrenWennSchreibt(thread.pfad, [senden, zurueck]);
   form.addEventListener("submit", (e) => { e.preventDefault(); absenden("ANTWORT"); });
   zurueck.addEventListener("click", () => absenden("ZURUECK"));
 
@@ -1018,15 +1139,34 @@ function frageKarte({ thread, block, f }) {
   );
 }
 
-async function schreibenMitKnopf(knoepfe, arbeit) {
-  for (const k of knoepfe) { k.disabled = true; k.setAttribute("aria-busy", "true"); }
-  try {
-    await arbeit();
-  } catch (e) {
-    schreibFehler(e);
-  } finally {
-    for (const k of knoepfe) { k.disabled = false; k.removeAttribute("aria-busy"); }
+/* Knöpfe einer Karte, deren Thread gerade beschrieben wird, bleiben gesperrt – auch wenn die
+ * Karte zwischendurch neu gezeichnet wird (sonst ginge ein zweiter Klick durch). */
+function sperrenWennSchreibt(pfad, knoepfe) {
+  for (const k of knoepfe) {
+    k.dataset.schreibt = pfad;
+    if (zustand.schreibt.has(pfad)) { k.disabled = true; k.setAttribute("aria-busy", "true"); }
   }
+}
+
+/* arbeit() schreibt und gibt zurück, was danach passieren soll (Entwurf löschen, neu zeichnen …). */
+async function threadSchreiben(pfad, knoepfe, arbeit) {
+  if (zustand.schreibt.has(pfad)) return;
+  const token = zustand.token;
+  zustand.schreibt.add(pfad);
+  for (const k of knoepfe) { k.disabled = true; k.setAttribute("aria-busy", "true"); }
+  let danach = null;
+  try {
+    await gateSicherstellen();
+    danach = await arbeit();
+  } catch (e) {
+    if (zustand.token === token) schreibFehler(e);
+  } finally {
+    zustand.schreibt.delete(pfad);
+    for (const k of document.querySelectorAll("[data-schreibt]")) {
+      if (k.dataset.schreibt === pfad) { k.disabled = false; k.removeAttribute("aria-busy"); }
+    }
+  }
+  if (danach && zustand.token === token) danach();
 }
 
 /* --- Roadmap --- */
@@ -1496,15 +1636,17 @@ function beitragForm(t) {
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!text.value.trim()) return;
-    await schreibenMitKnopf([knopf], async () => {
-      await gateSicherstellen();
-      const r = await anhaengen(t.pfad, blockText(sorte.value, text.value), `${t.slug}: ${sorte.value} [${ICH.ki}/${ICH.chat}]`);
-      entwuerfeLoeschen(schl + ":");
-      const geschrieben = sorte.value;
-      threadErsetzen(t.pfad, r.text, r.sha);
-      melden(`${geschrieben} in ${t.slug} geschrieben.`);
+    const geschrieben = sorte.value;
+    await threadSchreiben(t.pfad, [knopf], async () => {
+      const r = await anhaengen(t.pfad, geschrieben, text.value, `${t.slug}: ${geschrieben} [${ICH.ki}/${ICH.chat}]`);
+      return () => {
+        entwuerfeLoeschen(schl + ":");
+        threadErsetzen(t.pfad, r.text, r.sha);
+        melden(r.schonDa ? `${geschrieben} stand schon in ${t.slug} (früherer Versuch kam an).` : `${geschrieben} in ${t.slug} geschrieben.`);
+      };
     });
   });
+  sperrenWennSchreibt(t.pfad, [knopf]);
   return form;
 }
 
@@ -1534,17 +1676,22 @@ async function starten() {
   try {
     await laden();
   } catch (e) {
-    if (e instanceof GitHubFehler && (e.status === 401 || e.status === 403 || e.status === 404)) {
+    const f = $("anmeldung-fehler");
+    if (e instanceof GitHubFehler && e.status === 401) {
+      // Nur ein abgelehntes Token wird gelöscht; ein fine-grained Token zeigt GitHub nur einmal.
       speicherLoeschen(TOKEN_SCHLUESSEL);
       zustand.token = "";
-      const f = $("anmeldung-fehler");
-      f.textContent = e.status === 401
-        ? "GitHub kennt dieses Token nicht (abgelaufen oder vertippt)."
-        : `Kein Zugriff auf ${OWNER}/${REPO}${ZWEIG !== "main" ? " (Zweig " + ZWEIG + ")" : ""}: ${e.message}`;
+      f.textContent = "GitHub kennt dieses Token nicht (abgelaufen oder vertippt).";
       f.hidden = false;
       zeigen("anmeldung");
     } else if (hatDaten()) {
       melden("Neu laden fehlgeschlagen: " + e.message, true);
+    } else if (e instanceof GitHubFehler && (e.status === 403 || e.status === 404)) {
+      f.textContent = e.status === 404 && ZWEIG !== "main"
+        ? `Den Zweig „${ZWEIG}“ gibt es im Forum nicht (oder das Token sieht ihn nicht).`
+        : `Kein Zugriff auf ${OWNER}/${REPO}: ${e.message}. Das gespeicherte Token bleibt; ein neues hier ersetzt es.`;
+      f.hidden = false;
+      zeigen("anmeldung");
     } else {
       zeigen("anmeldung");
       melden("Laden fehlgeschlagen: " + e.message, true);
@@ -1556,7 +1703,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-4";
+const FASSUNG = "2026.10.03-5";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
@@ -1637,6 +1784,8 @@ function verdrahten() {
     zustand.threads = [];
     zustand.roadmap = null;
     zustand.gateOk = false;
+    zustand.laufend.clear();
+    zustand.schreibt.clear();
     document.title = SEITENTITEL;
     $("kopf-unter").textContent = "CORE-Forum · Roadmap 0.9.0b1 → 1.0";
     for (const id of ["verbindung", "neu-laden", "abmelden", "reiter", "fuss"]) $(id).hidden = true;
@@ -1646,7 +1795,12 @@ function verdrahten() {
   $("neu-laden").addEventListener("click", () => starten());
   $("thread-suche").addEventListener("input", threadListeZeichnen);
   $("nur-offene").addEventListener("change", threadListeZeichnen);
-  window.addEventListener("hashchange", () => { route(); window.scrollTo(0, 0); });
+  window.addEventListener("hashchange", () => {
+    // Dieselbe Frage-Karte steht auch in der Thread-Ansicht: Entwürfe von dort mitnehmen.
+    if (hatDaten()) mitFokus(fragenZeichnen);
+    route();
+    window.scrollTo(0, 0);
+  });
   let flussTimer = null;
   window.addEventListener("resize", () => {
     clearTimeout(flussTimer);
