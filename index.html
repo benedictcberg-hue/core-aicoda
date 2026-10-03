@@ -9,9 +9,9 @@
   <meta name="color-scheme" content="light dark">
   <title>CORE Betreiber-Pult</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232b5f9e'/%3E%3Cpath d='M9 10h14M9 16h8M9 22h4' stroke='%23fff' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='m17 22 3 3 5-6' fill='none' stroke='%236fd39b' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <meta name="pult-version" content="2026.10.03-6">
-  <link rel="stylesheet" href="style.css?v=2026.10.03-6">
-  <script src="thema.js?v=2026.10.03-6"></script>
+  <meta name="pult-version" content="2026.10.03-8">
+  <link rel="stylesheet" href="style.css?v=2026.10.03-8">
+  <script src="thema.js?v=2026.10.03-8"></script>
 </head>
 <body>
   <header class="kopf">
@@ -37,6 +37,10 @@
       <a href="#roadmap" data-reiter="roadmap"><span data-icon="roadmap"></span>Roadmap <span class="zaehler leise" id="zaehler-roadmap"></span></a>
       <a href="#threads" data-reiter="threads"><span data-icon="threads"></span>Threads <span class="zaehler leise" id="zaehler-threads"></span></a>
     </nav>
+    <div class="neu-balken" id="neu-balken" role="status" hidden>
+      <span data-icon="funke"></span><span>Neu im Forum</span>
+      <button type="button" class="knopf klein-knopf" id="neu-anzeigen">Anzeigen</button>
+    </div>
   </header>
 
   <main id="inhalt" tabindex="-1">
@@ -79,6 +83,7 @@
     </section>
 
     <section id="ansicht-zug" class="ansicht" hidden>
+      <section id="zug-neu" class="karte neu" aria-label="Seit deinem letzten Besuch" hidden></section>
       <div id="zug-lage" class="karte lage" hidden></div>
 
       <div class="abschnitt-kopf">
@@ -129,10 +134,11 @@
     <span id="fuss-quelle"></span>
     <span>Token bleibt in diesem Browser</span>
     <span id="fuss-stand"></span>
+    <span id="fuss-rest"></span>
   </footer>
 
   <div id="meldung" class="meldung" role="status" aria-live="polite" hidden></div>
 
-  <script src="app.js?v=2026.10.03-6"></script>
+  <script src="app.js?v=2026.10.03-8"></script>
 </body>
 </html>

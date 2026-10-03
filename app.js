@@ -29,6 +29,10 @@ const zustand = {
   offen: new Map(),     // auf-/zugeklappte Bereiche, überlebt das Neuzeichnen
   fokusNach: null,      // data-fokus-Schlüssel für den Fokus, wenn das fokussierte Element verschwindet
   schreibt: new Set(),  // Thread-Pfade, an die gerade angehängt wird (Knöpfe bleiben gesperrt, auch nach Neuzeichnen)
+  kopf: null,           // Commit, auf dem der angezeigte Stand beruht
+  kopfEtag: null,       // ETag dazu: der Puls fragt mit If-None-Match (304 kostet kein Kontingent)
+  neu: null,            // was seit dem letzten Besuch passiert ist (neuesErmitteln)
+  rest: null,           // X-RateLimit-Remaining der letzten Antwort
 };
 
 /* Während laden() läuft: was seit Ladebeginn geschrieben wurde. Das ist neuer als der Baum,
@@ -100,6 +104,10 @@ const ICONS = {
   ok: [{ kreis: [12, 12, 9] }, "m8 12 3 3 5-6"],
   fluss: [{ rechteck: [2, 4, 7, 6, 1.5] }, { rechteck: [15, 4, 7, 6, 1.5] }, { rechteck: [15, 14, 7, 6, 1.5] }, "M9 7h6", "M12 7v10h3"],
   kopieren: [{ rechteck: [9, 9, 12, 12, 2] }, "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"],
+  funke: ["M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z", "M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"],
+  plus: ["M12 5v14", "M5 12h14"],
+  minus: ["M5 12h14"],
+  person: [{ kreis: [12, 8, 4] }, "M4 21a8 8 0 0 1 16 0"],
 };
 
 function icon(name, klasse) {
@@ -248,6 +256,39 @@ class GitHubFehler extends Error {
   constructor(status, text) { super(`${status}: ${text}`); this.status = status; }
 }
 
+function restMerken(antwort) {
+  const rest = antwort.headers.get("X-RateLimit-Remaining");
+  if (rest === null || rest === "") return;
+  zustand.rest = Number(rest);
+  const ziel = $("fuss-rest");
+  if (ziel) ziel.textContent = `API-Kontingent ${zustand.rest}`;
+}
+
+const zweigUrl = () => ZWEIG.split("/").map(encodeURIComponent).join("/");
+
+/* Aktueller Commit des Zweigs. Mit ETag fragt der Puls: 304 = nichts Neues und zählt nicht
+ * gegen das Kontingent. Liefert null bei 304. */
+async function kopfLesen(etag) {
+  const antwort = await fetch(`${API}/git/ref/heads/${zweigUrl()}`, {
+    cache: "no-store",
+    headers: {
+      Authorization: `Bearer ${zustand.token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(etag ? { "If-None-Match": etag } : {}),
+    },
+  });
+  restMerken(antwort);
+  if (antwort.status === 304) return null;
+  if (!antwort.ok) {
+    let text = antwort.statusText;
+    try { text = (await antwort.json()).message || text; } catch (_) { /* kein JSON */ }
+    throw new GitHubFehler(antwort.status, text);
+  }
+  const d = await antwort.json();
+  return { sha: d.object.sha, etag: antwort.headers.get("ETag") };
+}
+
 async function gh(pfad, optionen = {}) {
   const antwort = await fetch(API + pfad, {
     ...optionen,
@@ -259,6 +300,7 @@ async function gh(pfad, optionen = {}) {
       ...(optionen.body ? { "Content-Type": "application/json" } : {}),
     },
   });
+  restMerken(antwort);
   if (!antwort.ok) {
     let text = antwort.statusText;
     try { text = (await antwort.json()).message || text; } catch (_) { /* kein JSON */ }
@@ -271,8 +313,8 @@ async function gh(pfad, optionen = {}) {
  * Lesen und Schreiben in eine andere Datei um. */
 const pfadUrl = (pfad) => pfad.split("/").map(encodeURIComponent).join("/");
 
-async function dateiLesen(pfad) {
-  const d = await gh(`/contents/${pfadUrl(pfad)}?ref=${encodeURIComponent(ZWEIG)}`);
+async function dateiLesen(pfad, ref = ZWEIG) {
+  const d = await gh(`/contents/${pfadUrl(pfad)}?ref=${encodeURIComponent(ref)}`);
   return { text: b64ZuText(d.content), sha: d.sha };
 }
 
@@ -280,6 +322,8 @@ async function dateiSchreiben(pfad, text, sha, meldung) {
   const koerper = { message: meldung, content: textZuB64(text), branch: ZWEIG };
   if (sha) koerper.sha = sha;
   const r = await gh(`/contents/${pfadUrl(pfad)}`, { method: "PUT", body: JSON.stringify(koerper) });
+  // Eigener Commit ist der neue Kopf: der Puls soll ihn nicht als „neu im Forum“ melden.
+  if (r.commit && r.commit.sha) { zustand.kopf = r.commit.sha; zustand.kopfEtag = null; }
   return r.content.sha;
 }
 
@@ -436,7 +480,8 @@ async function laden() {
   try {
     $("lade-balken").style.width = "5%";
     $("lade-text").textContent = "Lade Verzeichnis …";
-    const baum = await gh(`/git/trees/${encodeURIComponent(ZWEIG)}?recursive=1`);
+    const kopf = await kopfLesen();
+    const baum = await gh(`/git/trees/${kopf.sha}?recursive=1`);
     const dateien = baum.tree.filter((e) => e.type === "blob");
     // dieselbe Regel wie forum.py (SLUG): nur a–z, 0–9 und Bindestrich
     const threadDateien = dateien.filter((e) => /^threads\/[a-z0-9]+(?:-[a-z0-9]+)*\.txt$/.test(e.path)
@@ -468,7 +513,13 @@ async function laden() {
       try { roadmap = JSON.parse(roh); roadmapSha = roadmapDatei.sha; } catch (e) { kaputt = e; }
       fortschritt();
     }
+    // Was seit dem letzten Besuch passiert ist: darf das Laden nie scheitern lassen.
+    let neu = null;
+    try { neu = await neuesErmitteln(kopf.sha, threads, roadmap); } catch (e) { neu = null; }
     if (zustand.token !== token) return;
+    zustand.kopf = kopf.sha;
+    zustand.kopfEtag = kopf.etag;
+    zustand.neu = neu;
 
     // Während des Ladens Geschriebenes ist neuer als der Baum vom Anfang.
     zustand.threads = threads.map((t) => lauf.threads.get(t.pfad) || t);
@@ -494,6 +545,7 @@ async function laden() {
   pille.className = "pille " + (ZWEIG === "main" ? "ok" : "zweig");
   pille.title = `${OWNER}/${REPO} @ ${ZWEIG}`;
   for (const id of ["verbindung", "neu-laden", "abmelden", "reiter", "fuss"]) $(id).hidden = false;
+  $("neu-balken").hidden = true;
   const uhr = zustand.geladen.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
   $("fuss-quelle").textContent = `${REPO} @ ${ZWEIG}`;
   $("fuss-stand").textContent = `geladen ${uhr}`;
@@ -968,6 +1020,7 @@ function fragenZeichnen() {
 }
 
 function zugRoadmapZeichnen() {
+  neuZeichnen();
   const aufgaben = meineAufgaben();
   lageZeichnen(aufgaben);
 
@@ -1084,6 +1137,238 @@ function zuletztZeichnen() {
             ` ${datumLesbar(punkt.erledigt)}${punkt.von ? " · " + punkt.von : ""} · ${meilenstein.id} ${meilenstein.titel}`)),
         el("div", { class: "aufgabe-rechts" }, werMarke(punkt.wer, true))))));
   box.append(aufklappen(details, "zuletzt", false));
+}
+
+/* --- Seit deinem letzten Besuch --- */
+
+/* Gemerkt wird nur der Commit (und wann), nie Inhalt. Je Gerät/Browser ein eigener Stempel. */
+const GESEHEN_SCHLUESSEL = `core-pult-gesehen:${ZWEIG}`;
+function gesehenLesen() {
+  try {
+    const g = JSON.parse(localStorage.getItem(GESEHEN_SCHLUESSEL) || "null");
+    return g && typeof g.sha === "string" && /^[0-9a-f]{40}$/.test(g.sha) ? g : null;
+  } catch (_) { return null; }
+}
+function gesehenSetzen(sha) {
+  if (!sha) return;
+  try { localStorage.setItem(GESEHEN_SCHLUESSEL, JSON.stringify({ sha, zeit: new Date().toISOString() })); } catch (_) { /* gesperrt */ }
+}
+
+const EIGENE_MARKE = `[${ICH.ki}/${ICH.chat}]`;
+
+/* Ein Commit in lesbarer Form. Die Nachrichten sind dank forum.py und Pult schon strukturiert:
+ *   „037-arbeitsteilung…: ANTRAG [grok/lesart-029]“, „054: BEFUND Altzweige … [claude/x]“,
+ *   „roadmap: M4-V19 erledigt [betreiber/dashboard]“, „Gate: grok/lesart-029“. */
+function commitLesen(c, threads) {
+  const nachricht = String((c.commit && c.commit.message) || "").split("\n")[0].trim();
+  const autor = (c.commit && c.commit.author && c.commit.author.name) || "";
+  const zeit = (c.commit && c.commit.author && c.commit.author.date) || "";
+  const eigen = nachricht.endsWith(EIGENE_MARKE) || nachricht === `Gate: ${ICH.ki}/${ICH.chat}`;
+  let m;
+  if ((m = /^roadmap: (\S+) /.exec(nachricht))) return { art: "roadmap", id: m[1], eigen, nachricht, zeit };
+  if ((m = /^(\d{3})[a-z0-9-]*: ([A-Z]+)\b ?(.*?)\s*\[([a-z0-9_-]+)\/([a-z0-9_-]+)\]$/.exec(nachricht)) && SORTEN.includes(m[2])) {
+    const thread = threads.find((t) => t.nummer === m[1]) || null;
+    return { art: "beitrag", nummer: m[1], sorte: m[2], zusatz: m[3], wer: `${m[4]}/${m[5]}`, thread, eigen, zeit };
+  }
+  if ((m = /^Gate: ([a-z0-9_-]+\/[a-z0-9_-]+)$/.exec(nachricht))) return { art: "gate", wer: m[1], eigen, zeit };
+  return { art: "sonst", text: nachricht, wer: autor, eigen, zeit };
+}
+
+/* Punkte, Ready und Stand id-genau vergleichen. ausnehmen: IDs, die der Betreiber selbst geändert hat. */
+function roadmapUnterschiede(altRoh, neuRoh, ausnehmen) {
+  const alt = roadmapSauber(altRoh);
+  const neu = roadmapSauber(neuRoh);
+  if (!alt || !neu) return [];
+  const karte = (rm) => {
+    const k = new Map();
+    for (const ms of rm.meilensteine) for (const p of ms.punkte) k.set(p.id, { p, ms: ms.id });
+    for (const r of rm.ready) k.set(r.id, { p: r, ms: "Ready" });
+    return k;
+  };
+  const ka = karte(alt);
+  const kn = karte(neu);
+  const aus = [];
+  if (alt.stand !== neu.stand) aus.push({ art: "stand", von: alt.stand, nach: neu.stand });
+  for (const [id, { p, ms }] of kn) {
+    if (ausnehmen.has(id)) continue;
+    const vor = ka.get(id);
+    if (!vor) aus.push({ art: "punkt-neu", id, titel: p.titel, ms });
+    else if (vor.p.status !== p.status) aus.push({ art: "status", id, titel: p.titel, von: vor.p.status, nach: p.status, wer: p.von, ms });
+    else if (p.wer !== undefined && vor.p.wer !== p.wer) aus.push({ art: "wer", id, titel: p.titel, von: vor.p.wer, nach: p.wer, ms });
+    else if (p.fehlt !== undefined && vor.p.fehlt !== p.fehlt) aus.push({ art: "fehlt", id, titel: p.titel, fehlt: p.fehlt, ms });
+  }
+  for (const [id, { p, ms }] of ka) if (!kn.has(id) && !ausnehmen.has(id)) aus.push({ art: "punkt-weg", id, titel: p.titel, ms });
+  return aus;
+}
+
+async function neuesErmitteln(kopf, threads, roadmapJetzt) {
+  const g = gesehenLesen();
+  if (!g) { gesehenSetzen(kopf); return { erstesMal: true, seit: null, eintraege: [], roadmap: [], pfade: new Set() }; }
+  if (g.sha === kopf) return { seit: g, eintraege: [], roadmap: [], pfade: new Set() };
+  let vergleich;
+  try {
+    vergleich = await gh(`/compare/${g.sha}...${kopf}`);
+  } catch (e) {
+    // Alter Commit unbekannt (Force-Push o. ä.): Stempel still neu setzen.
+    if (e instanceof GitHubFehler && (e.status === 404 || e.status === 422)) { gesehenSetzen(kopf); return null; }
+    throw e;
+  }
+  const commits = (vergleich.commits || []).map((c) => commitLesen(c, threads));
+  const eigeneIds = new Set(commits.filter((c) => c.art === "roadmap" && c.eigen).map((c) => c.id));
+  const fremd = commits.filter((c) => !c.eigen);
+  // Beiträge je Thread und Sorte bündeln: „029: 2× FRAGE von grok/lesart-029“
+  const eintraege = [];
+  const buendel = new Map();
+  for (const c of fremd) {
+    if (c.art === "roadmap") continue;
+    if (c.art === "beitrag") {
+      const k = `${c.nummer}|${c.sorte}|${c.wer}`;
+      if (buendel.has(k)) { buendel.get(k).anzahl++; buendel.get(k).zeit = c.zeit; continue; }
+      const e = { ...c, anzahl: 1 };
+      buendel.set(k, e);
+      eintraege.push(e);
+    } else {
+      eintraege.push(c);
+    }
+  }
+  const pfade = new Set(eintraege.filter((e) => e.thread).map((e) => e.thread.pfad));
+  let roadmap = [];
+  const dateien = (vergleich.files || []).map((f) => f.filename);
+  if (dateien.includes("roadmap.json") && roadmapJetzt && fremd.length) {
+    try {
+      const alt = JSON.parse((await dateiLesen("roadmap.json", g.sha)).text);
+      roadmap = roadmapUnterschiede(alt, roadmapJetzt, eigeneIds);
+    } catch (_) {
+      roadmap = [{ art: "geaendert" }];
+    }
+  }
+  return {
+    seit: g, eintraege, roadmap, pfade,
+    mehr: (vergleich.total_commits || 0) > (vergleich.commits || []).length,
+  };
+}
+
+function seitWann(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const min = Math.round((Date.now() - d.getTime()) / 60000);
+  if (min < 2) return "gerade eben";
+  if (min < 60) return `vor ${min} Min.`;
+  const std = Math.round(min / 60);
+  if (std < 24) return `vor ${std} Std.`;
+  const tage = Math.round(std / 24);
+  return tage < 7 ? `vor ${tage} ${tage === 1 ? "Tag" : "Tagen"}` : `seit ${d.toLocaleDateString("de-DE")}`;
+}
+
+/* Ein Block ist „neu“, wenn er nach dem Stempel kam und nicht vom Betreiber stammt.
+ * Blockzeiten kommen von der Uhr der KI – reicht zum Markieren, nicht zum Rechnen. */
+function istNeuerBlock(b) {
+  const seit = zustand.neu && zustand.neu.seit;
+  if (!seit || b.ki === ICH.ki) return false;
+  const t = new Date(String(b.zeit).replace(/Z$/, ":00Z")).getTime();
+  return !isNaN(t) && t > new Date(seit.zeit).getTime();
+}
+function threadIstNeu(t) {
+  return !!(zustand.neu && zustand.neu.seit) && (zustand.neu.pfade.has(t.pfad) || t.bloecke.some(istNeuerBlock));
+}
+function meilensteinIstNeu(id) {
+  return !!(zustand.neu && zustand.neu.roadmap.some((r) => r.ms === id));
+}
+
+const STATUS_WORT = { x: "erledigt", "~": "teilweise", ".": "offen" };
+
+function neuZeile(e) {
+  if (e.art === "beitrag") {
+    const t = e.thread;
+    const titel = t ? t.titel : `Thread ${e.nummer}`;
+    const inhalt = [el("span", { class: "neu-wer", text: e.wer }), " ",
+      el("span", { class: `marke ${e.sorte === "FRAGE" ? "zug" : e.sorte === "BESCHLUSS" || e.sorte === "ANTWORT" ? "ok" : ""}`.trim(), text: e.anzahl > 1 ? `${e.anzahl}× ${e.sorte}` : e.sorte }),
+      " ", el("span", { class: "neu-titel", text: `${e.nummer} · ${titel}` }),
+      e.zusatz ? el("span", { class: "neu-zusatz", text: e.zusatz }) : null];
+    return el("li", {}, icon(e.sorte === "FRAGE" ? "rueckfrage" : "threads", "neu-ic"),
+      t ? el("a", { class: "neu-text", href: `#t/${encodeURIComponent(t.slug)}` }, inhalt) : el("span", { class: "neu-text" }, inhalt));
+  }
+  if (e.art === "gate") return el("li", {}, icon("person", "neu-ic"), el("span", { class: "neu-text" }, el("span", { class: "neu-wer", text: e.wer }), " hat sich am Forum angemeldet"));
+  if (e.art === "status") {
+    return el("li", {}, icon(e.nach === "x" ? "ok" : "roadmap", "neu-ic"), el("a", { class: "neu-text", href: "#roadmap" },
+      el("span", { class: "kennung", text: e.id }), " ", e.titel, " ",
+      el("span", { class: `marke ${e.nach === "x" ? "ok" : e.nach === "~" ? "teil" : "offen"}`, text: `${STATUS_WORT[e.von]} → ${STATUS_WORT[e.nach]}` }),
+      e.wer ? el("span", { class: "neu-zusatz", text: e.wer }) : null));
+  }
+  if (e.art === "wer") {
+    const zuDir = e.nach === "betreiber" || e.nach === "betrieb";
+    return el("li", {}, icon(zuDir ? WER_ICON[e.nach] : "code", "neu-ic"), el("a", { class: "neu-text", href: zuDir ? "#zug" : "#roadmap" },
+      el("span", { class: "kennung", text: e.id }), " ", e.titel, " ",
+      el("span", { class: `marke ${zuDir ? "zug" : ""}`.trim(), text: zuDir ? `liegt jetzt bei dir: ${werText(e.nach)}` : `jetzt: ${werText(e.nach)}` })));
+  }
+  if (e.art === "punkt-neu") return el("li", {}, icon("plus", "neu-ic"), el("a", { class: "neu-text", href: "#roadmap" }, "Neuer Punkt ", el("span", { class: "kennung", text: e.id }), " ", e.titel));
+  if (e.art === "punkt-weg") return el("li", {}, icon("minus", "neu-ic"), el("span", { class: "neu-text" }, "Punkt entfernt: ", el("span", { class: "kennung", text: e.id }), " ", e.titel));
+  if (e.art === "fehlt") return el("li", {}, icon("ready", "neu-ic"), el("a", { class: "neu-text", href: "#roadmap" }, el("span", { class: "kennung", text: e.id }), " fehlt jetzt: ", e.fehlt));
+  if (e.art === "stand") return el("li", {}, icon("roadmap", "neu-ic"), el("span", { class: "neu-text", text: `Roadmap-Stand ${datumLesbar(e.von)} → ${datumLesbar(e.nach)}` }));
+  if (e.art === "geaendert") return el("li", {}, icon("roadmap", "neu-ic"), el("span", { class: "neu-text", text: "roadmap.json wurde geändert" }));
+  return el("li", {}, icon("info", "neu-ic"), el("span", { class: "neu-text" }, e.text, e.wer ? el("span", { class: "neu-zusatz", text: e.wer }) : null));
+}
+
+let neuSichtbarSeit = 0;
+function neuZeichnen() {
+  const box = $("zug-neu");
+  box.replaceChildren();
+  const n = zustand.neu;
+  const alle = n && n.seit ? [...n.eintraege, ...n.roadmap] : [];
+  if (!alle.length) { box.hidden = true; neuSichtbarSeit = 0; return; }
+  box.hidden = false;
+  const zeilen = alle.map(neuZeile);
+  const sofort = zeilen.slice(0, 6);
+  const rest = zeilen.slice(6);
+  const fragen = n.eintraege.filter((e) => e.sorte === "FRAGE").reduce((a, e) => a + e.anzahl, 0);
+  const beitraege = n.eintraege.filter((e) => e.art === "beitrag").reduce((a, e) => a + e.anzahl, 0);
+  const teile = [beitraege && anzahl(beitraege, "Beitrag", "Beiträge"), fragen && anzahl(fragen, "Frage", "Fragen"), n.roadmap.length && anzahl(n.roadmap.length, "Roadmap-Änderung", "Roadmap-Änderungen")].filter(Boolean);
+  box.append(
+    el("div", { class: "neu-kopf" },
+      el("span", { class: "neu-funke", "aria-hidden": "true" }, icon("funke")),
+      el("div", { class: "neu-kopf-text" },
+        el("h2", { text: "Seit deinem letzten Besuch" }),
+        el("p", { class: "hinweis", text: `${seitWann(n.seit.zeit)} · ${teile.join(" · ")}${n.mehr ? " · und weitere" : ""}` })),
+      el("button", { type: "button", class: "knopf zweit klein-knopf", "data-fokus": "neu-gesehen", onclick: neuGesehen }, icon("haken"), "Gesehen")),
+    el("ul", { class: "neu-liste" }, sofort),
+    rest.length ? aufklappen(el("details", { class: "neu-mehr" }, el("summary", {}, icon("runter", "chevron"), `alle ${zeilen.length} zeigen`), el("ul", { class: "neu-liste" }, rest)), "neu-mehr", false) : null,
+  );
+  if (!neuSichtbarSeit && document.visibilityState === "visible" && !$("ansicht-zug").hidden) neuSichtbarSeit = Date.now();
+}
+
+function neuGesehen() {
+  gesehenSetzen(zustand.kopf);
+  zustand.neu = { seit: gesehenLesen(), eintraege: [], roadmap: [], pfade: new Set() };
+  neuSichtbarSeit = 0;
+  allesZeichnen();
+  $("inhalt").focus({ preventScroll: true });
+  melden("Als gesehen gemerkt. Neues erscheint hier wieder.");
+}
+
+/* --- Puls: beim Zurückkommen und alle 90 s nachsehen, ob es Neues gibt --- */
+
+let pulsLaeuft = false;
+function beschaeftigt() {
+  const a = document.activeElement;
+  return zustand.laufend.size > 0 || zustand.schreibt.size > 0
+    || (a && /^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName) && a.type !== "checkbox" && a.type !== "radio" && !!a.value);
+}
+async function puls() {
+  if (pulsLaeuft || !zustand.token || !hatDaten() || document.visibilityState !== "visible") return;
+  if ($("neu-laden").disabled) return;
+  pulsLaeuft = true;
+  try {
+    const kopf = await kopfLesen(zustand.kopfEtag);
+    if (!kopf) return;                       // 304: nichts Neues
+    zustand.kopfEtag = kopf.etag;
+    if (kopf.sha === zustand.kopf) return;   // nur der eigene Commit
+    if (beschaeftigt()) { $("neu-balken").hidden = false; return; }
+    await starten();
+  } catch (_) {
+    /* Puls ist Kür: Netzfehler still übergehen, der Knopf „Neu laden“ bleibt */
+  } finally {
+    pulsLaeuft = false;
+  }
 }
 
 function frageKarte({ thread, block, f }) {
@@ -1403,8 +1688,9 @@ function flussZeichnen() {
     },
     el("span", { class: "fluss-kopf" },
       el("span", { class: "ms-id", text: m.id }),
-      z.stufe === "fertig" ? el("span", { class: "marke ok" }, icon("haken"), "fertig")
-        : z.beiDir ? el("span", { class: "marke zug", text: `${z.beiDir} bei dir` }) : null),
+      meilensteinIstNeu(m.id) ? el("span", { class: "marke neu", title: "seit deinem letzten Besuch geändert" }, icon("funke"), "neu")
+        : z.stufe === "fertig" ? el("span", { class: "marke ok" }, icon("haken"), "fertig")
+          : z.beiDir ? el("span", { class: "marke zug", text: `${z.beiDir} bei dir` }) : null),
     el("span", { class: "fluss-titel", text: m.titel }),
     vor.length ? el("span", { class: "fluss-nach", text: `nach ${vor.join(" · ")}` }) : null,
     el("span", { class: "fluss-fuss" },
@@ -1595,6 +1881,7 @@ function threadListeZeichnen() {
         el("span", { class: "thread-titel", text: t.titel }),
         el("span", { class: "thread-letzt", text: l ? `zuletzt ${l.sorte} · ${l.ki}/${l.chat} · ${zeitLesbar(l.zeit)}` : (t.kopf.Aktualisiert ? `Archiv · ${t.kopf.Aktualisiert.slice(0, 10)}` : "Archiv") })),
       el("span", { class: "thread-rechts" },
+        threadIstNeu(t) ? el("span", { class: "marke neu" }, icon("funke"), "neu") : null,
         t.offen.length ? el("span", { class: "marke zug" }, icon("rueckfrage"), "Frage an dich") : null,
         t.art ? el("span", { class: "marke", text: t.art }) : null,
         el("span", { class: `marke ${t.geschlossen ? "ok" : "offen"}`, text: t.geschlossen ? "geschlossen" : "offen" }))));
@@ -1647,12 +1934,13 @@ function threadDetailZeichnen(slug) {
   }
   if (t.bloecke.length) {
     ziel.append(el("div", { class: "verlauf" }, t.bloecke.map((b) =>
-      el("article", { class: `block s-${b.sorte}` },
+      el("article", { class: `block s-${b.sorte}${istNeuerBlock(b) ? " ist-neu" : ""}` },
         el("span", { class: `block-avatar ${avatarKlasse(b.ki)}`, "aria-hidden": "true", text: b.ki.slice(0, 1).toUpperCase() }),
         el("div", { class: "karte block-inhalt" },
           el("div", { class: "block-kopf" },
             el("span", { class: "block-sig", text: `${b.ki}/${b.chat}` }),
             sorteMarke(b.sorte),
+            istNeuerBlock(b) ? el("span", { class: "marke neu" }, icon("funke"), "neu") : null,
             el("time", { class: "meta", text: zeitLesbar(b.zeit) })),
           textBlock(b.text))))));
   }
@@ -1744,7 +2032,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-6";
+const FASSUNG = "2026.10.03-8";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
@@ -1827,11 +2115,15 @@ function verdrahten() {
     zustand.gateOk = false;
     zustand.laufend.clear();
     zustand.schreibt.clear();
+    zustand.neu = null;
+    zustand.kopf = null;
+    zustand.kopfEtag = null;
+    $("neu-balken").hidden = true;
     // Die Seite verspricht „keine Forum-Inhalte“: Blob-Kopien und gezeichnete Ansichten mit weg.
     try {
       for (const k of Object.keys(sessionStorage)) if (k.startsWith("blob:")) sessionStorage.removeItem(k);
     } catch (_) { /* gesperrt */ }
-    for (const id of ["zug-lage", "fragen-liste", "aufgaben-liste", "zuletzt-box", "roadmap-gesamt", "roadmap-fluss",
+    for (const id of ["zug-neu", "zug-lage", "fragen-liste", "aufgaben-liste", "zuletzt-box", "roadmap-gesamt", "roadmap-fluss",
       "roadmap-meilensteine", "roadmap-ready-box", "roadmap-extra", "thread-liste", "thread-detail"]) $(id).replaceChildren();
     document.title = SEITENTITEL;
     $("kopf-unter").textContent = "CORE-Forum · Roadmap 0.9.0b1 → 1.0";
@@ -1848,6 +2140,18 @@ function verdrahten() {
     route();
     window.scrollTo(0, 0);
   });
+  // Puls: beim Zurückkommen (Tab, Fenster, iOS-Rückkehr aus dem Speicher) und alle 90 s.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") { puls(); return; }
+    // Verlassen nach ≥ 5 s mit sichtbarer Karte „Seit deinem letzten Besuch“: als gesehen merken.
+    if (neuSichtbarSeit && Date.now() - neuSichtbarSeit >= 5000) gesehenSetzen(zustand.kopf);
+  });
+  window.addEventListener("focus", () => puls());
+  window.addEventListener("pageshow", (e) => { if (e.persisted) puls(); });
+  const pulsTakt = () => { puls(); setTimeout(pulsTakt, 90000); };
+  setTimeout(pulsTakt, 90000);
+  $("neu-anzeigen").addEventListener("click", () => { $("neu-balken").hidden = true; starten(); });
+
   let flussTimer = null;
   window.addEventListener("resize", () => {
     clearTimeout(flussTimer);
