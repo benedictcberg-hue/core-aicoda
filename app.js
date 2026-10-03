@@ -589,6 +589,7 @@ function roadmapSauber(rm) {
   const punkt = (p) => ({
     id: id(p.id), titel: text(p.titel), status: status(p.status), wer: text(p.wer),
     notiz: wahl(p.notiz), frage: wahl(p.frage), thread: wahl(p.thread), erledigt: wahl(p.erledigt), von: wahl(p.von),
+    ready: Array.isArray(p.ready) ? p.ready.map(text) : undefined,
   });
   return {
     stand: text(rm.stand), basis: text(rm.basis), quelle: text(rm.quelle), produkt: text(rm.produkt),
@@ -1266,7 +1267,15 @@ function beschluesse() {
       nachzug.set(p.id, { paar, treffer });
     }
   }
-  beschlussMemo = { rm, schluessel, paare, nachzug };
+  const fragenRoadmap = [];
+  for (const t of zustand.threads) {
+    for (const blk of t.bloecke) {
+      if (blk.sorte !== "FRAGE") continue;
+      const f = frageParsen(blk);
+      if (f.roadmap.length) fragenRoadmap.push({ thread: t, frage: blk, f, punkte: punkteZuTokens(f.roadmap, rm, f.frage, t.slug) });
+    }
+  }
+  beschlussMemo = { rm, schluessel, paare, nachzug, fragenRoadmap };
   return beschlussMemo;
 }
 const istBeiDir = (p) => istMeins(p) && p.status !== "x" && !beschluesse().nachzug.has(p.id);
@@ -1709,6 +1718,14 @@ function zugRoadmapZeichnen() {
   zuletztZeichnen();
 }
 
+function readyMarke() {
+  const stand = readyStand();
+  if (!stand.length) return null;
+  const abhakbar = stand.filter((x) => x.abhakbar).length;
+  return el("a", { class: "marke" + (abhakbar ? " zug" : " leise"), href: "#roadmap", title: "Ready-Stand in der Roadmap" },
+    icon("ready"), `Ready ${stand.filter((x) => x.r.status === "x").length}/${stand.length}${abhakbar ? ` · ${abhakbar} abhakbar` : ""}`);
+}
+
 function lageZeichnen(aufgaben) {
   const box = $("zug-lage");
   box.replaceChildren();
@@ -1733,7 +1750,8 @@ function lageZeichnen(aufgaben) {
         el("span", { class: "marke" + (fragen ? " zug" : " leise") }, icon("rueckfrage"), anzahl(fragen, "Frage", "Fragen")),
         el("span", { class: "marke" + (entscheidungen ? " zug" : " leise") }, icon("entscheidung"), anzahl(entscheidungen, "Entscheidung", "Entscheidungen")),
         el("span", { class: "marke" + (handlaeufe ? " zug" : " leise") }, icon("handlauf"), anzahl(handlaeufe, "Handlauf", "Handläufe")),
-        el("span", { class: "marke ok" }, icon("ok"), `${fertig}/${alle.length} fertig`)),
+        el("span", { class: "marke ok" }, icon("ok"), `${fertig}/${alle.length} fertig`),
+        readyMarke()),
       ...ballZeichnen(aufgaben),
       lageHinweise(),
       rm.kritischer_pfad ? el("p", { class: "lage-pfad" }, icon("roadmap"), el("span", { text: rm.kritischer_pfad })) : null),
@@ -2644,6 +2662,271 @@ async function threadSchreiben(pfad, knoepfe, arbeit) {
   if (danach && zustand.token === token) danach();
 }
 
+/* --- Bis zum Tag: Ready-Rechner ---
+ * Die Ready-Kacheln tragen Freitext („fehlt: V-19, V-22, Anhang B 9“), der veraltet. Hier wird
+ * jedes R mit den Punkten verknüpft, die es belegen, und daraus ein Zustand abgeleitet. Nur
+ * Anzeige: den R-Haken setzt der Betreiber selbst, er ist sein Urteil. */
+
+/* „V-22“ statt „M4-V22“, wo der Titel eine Kennung trägt. */
+function kurzName(p) {
+  const m = TITEL_KENNUNG.exec(String(p.titel || ""));
+  return m ? m[1] : p.id;
+}
+function releaseVersion() {
+  const rm = zustand.roadmap;
+  if (!rm) return "";
+  const kette = flussGraph(rm).kette;
+  const ziel = kette.length ? (rm.meilensteine || []).find((m) => m.id === kette[kette.length - 1]) : null;
+  for (const t of [ziel && ziel.titel, rm.ziel, rm.produkt]) {
+    const m = /\d+\.\d+\.\d+\w*/.exec(String(t || ""));
+    if (m) return m[0];
+  }
+  return "";
+}
+/* Teile von „fehlt“, die noch etwas fehlen lassen („Golden 5/5 ist fertig“ fällt weg). */
+const fehltTeile = (fehlt) => String(fehlt || "").split(/[,;]/).map((s) => s.trim())
+  .filter((s) => s && !/fertig|ist da|sind da|geübt|existier|liegen|liegt/i.test(s));
+
+/* Welche Punkte belegen r? Vier Quellen, die erste gewinnt; doppelte Treffer zusammengefasst. */
+function readyBezug(r, rm, b = beschluesse()) {
+  const aus = [];
+  const dazu = (punkt, ms, weil, vermutet, ausFehlt) => {
+    const da = aus.find((x) => x.punkt === punkt);
+    if (da) { da.ausFehlt = da.ausFehlt || ausFehlt; da.vermutet = da.vermutet && vermutet; return; }
+    aus.push({ punkt, ms, weil, vermutet, ausFehlt });
+  };
+  const nr = String(r.id).replace(/^R/, "");
+  const alle = roadmapPunkte();
+  for (const { meilenstein, punkt } of alle) if ((punkt.ready || []).includes(r.id)) dazu(punkt, meilenstein, "roadmap.json: ready", false, false);
+  for (const { meilenstein, punkt } of alle) {
+    const re = /\bR(\d+)\b/g;
+    let m;
+    while ((m = re.exec(`${punkt.titel} ${punkt.notiz || ""}`))) {
+      if (m[1] === nr) { dazu(punkt, meilenstein, `${punkt.id} nennt (${r.id})`, false, false); break; }
+    }
+  }
+  if (r.status !== "x" || r.fehlt) {
+    for (const teil of fehltTeile(r.fehlt)) {
+      for (const k of teil.match(/Anhang B \d+|Anh\.?\s?B \d+|\b[A-Z]-\d+\b/g) || []) {
+        const n = kennungNorm(k);
+        for (const { meilenstein, punkt } of alle) if (punktSchluessel(punkt).has(n)) dazu(punkt, meilenstein, `${r.id} nennt ${k}`, true, true);
+      }
+    }
+  }
+  for (const f of b.fragenRoadmap) {
+    if (!f.f.roadmap.includes(r.id)) continue;
+    for (const t of f.punkte) dazu(t.punkt, t.ms, `FRAGE ${f.thread.nummer} nennt ${t.weil} und ${r.id}`, true, false);
+  }
+  return aus;
+}
+/* Je R: Bezug, abgeleiteter Zustand, Widerspruch, offene Melde-Zusage. */
+function readyStand() {
+  const rm = zustand.roadmap;
+  if (!rm || !(rm.ready || []).length) return [];
+  const b = beschluesse();
+  const zusagen = zusagenOffen();
+  return rm.ready.map((r) => {
+    const bezug = readyBezug(r, rm, b);
+    const offen = bezug.filter((x) => x.punkt.status !== "x");
+    const art = !bezug.length ? "ohne"
+      : !offen.length ? "erfuellt"
+        : offen.every((x) => { const n = b.nachzug.get(x.punkt.id); return n && n.paar.klasse === "erledigt"; }) ? "beschluss" : "offen";
+    const zusage = zusagen.find((z) => z.paar.rTokens.includes(r.id)) || null;
+    return {
+      r, bezug, offen, art, zusage,
+      widerspruch: bezug.filter((x) => x.ausFehlt && x.punkt.status === "x"),
+      abweichend: art !== "ohne" && (r.status === "x") !== (art === "erfuellt"),
+      abhakbar: r.status !== "x" && art === "erfuellt" && !zusage,
+    };
+  });
+}
+function readyTitel(x) {
+  if (x.r.status === "x") return `${x.r.id}: erfüllt laut roadmap.json`;
+  if (x.art === "ohne") return `${x.r.id}: kein Punkt in roadmap.json verknüpft`;
+  const n = x.bezug.length;
+  return `${x.r.id}: ${n - x.offen.length} von ${n} ${n === 1 ? "Punkt" : "Punkten"} erledigt${x.offen.length ? `, fehlt ${x.offen.map((q) => kurzName(q.punkt)).join(", ")}` : ""}`;
+}
+function readyChip(x) {
+  const p = x.punkt;
+  const fertig = p.status === "x";
+  return el("span", {
+    class: `marke ready-chip${fertig ? " ok erledigt" : " leise"}${x.vermutet ? " vermutet" : ""}`,
+    title: x.vermutet ? `vermutet: ${x.weil}` : x.weil,
+  }, fertig ? icon("haken") : null, kurzName(p), fertig ? el("span", { class: "sr-nur", text: " erledigt" }) : null);
+}
+function widerspruchSatz(liste) {
+  return liste.map((x) => `Der Text nennt ${kurzName(x.punkt)} als fehlend – ${x.punkt.id} ist erledigt (${datumLesbar(x.punkt.erledigt) || "?"}${x.punkt.von ? `, ${x.punkt.von}` : ""}).`).join(" ");
+}
+function widerspruchMelden(x) {
+  const ziel = anstossZiel();
+  if (!ziel) return;
+  const namen = x.widerspruch.map((w) => kurzName(w.punkt));
+  const tage = [...new Set(x.widerspruch.map((w) => datumLesbar(w.punkt.erledigt)).filter(Boolean))];
+  entwurfVorbereiten(ziel, "BEFUND",
+    `Ready ${x.r.id}: ‚fehlt‘ ist veraltet – ${aufzaehlen(namen)} ${namen.length === 1 ? "ist" : "sind"} erledigt${tage.length ? ` (${tage.join(", ")})` : ""}. Bitte fehlt in roadmap.json nachziehen.`);
+  melden(`Entwurf in ${ziel.nummer} vorbereitet – prüfen und anhängen.`);
+}
+function punktVorschlagen(x) {
+  const ziel = anstossZiel();
+  if (!ziel) return;
+  const st = graphStand(zustand.roadmap);
+  const kette = st.g.kette;
+  const rel = kette.length ? kette[kette.length - 1] : "";
+  // Vorschlag: der offene Vorgänger des Release-Meilensteins mit dem meisten Rest.
+  const ms = (rel ? st.vor.get(rel) || [] : []).filter((v) => !st.fertig(v))
+    .sort((a, b) => st.zahl.get(b).offen.length - st.zahl.get(a).offen.length)[0] || rel || "?";
+  const fehlt = fehltTeile(x.r.fehlt).join(", ");
+  const wer = /Probe|Lauf|Handlauf|prüfen|testen/i.test(fehlt) ? "betrieb" : "code";
+  entwurfVorbereiten(ziel, "ANTRAG",
+    `Für ${x.r.id} (${x.r.titel}) steht kein Punkt in roadmap.json.${fehlt ? ` Laut Ready fehlt: ${fehlt}.` : ""} Vorschlag: neuer Punkt in ${ms}, wer: ${wer}.`);
+  melden(`Entwurf in ${ziel.nummer} vorbereitet – prüfen und anhängen.`);
+}
+
+function readyKarteZeichnen(stand) {
+  const n = stand.length;
+  const deklariert = stand.filter((x) => x.r.status === "x").length;
+  const erfuellt = stand.filter((x) => x.r.status !== "x" && x.art === "erfuellt").map((x) => x.r.id);
+  const beschluss = stand.filter((x) => x.r.status !== "x" && x.art === "beschluss").map((x) => x.r.id);
+  const version = releaseVersion();
+
+  const leiste = el("ol", { class: "ready-leiste", "aria-label": "Ready R1 bis R10" }, stand.map((x) => {
+    const titel = readyTitel(x);
+    return el("li", { class: `rl-${x.r.status === "x" ? "ok" : x.r.status === "~" ? "teil" : "offen"}${x.abweichend ? " abweichend" : ""}`, title: titel },
+      el("span", { class: "rl-id", "aria-hidden": "true", text: x.r.id.replace(/^R/, "") }), el("span", { class: "sr-nur", text: titel }));
+  }));
+  const satz = [`Ready ${deklariert}/${n} laut roadmap.json`];
+  if (erfuellt.length) satz.push(`laut Punkten erfüllt: ${erfuellt.join(", ")}`);
+  if (beschluss.length) satz.push(`per Beschluss erledigbar: ${beschluss.join(", ")}`);
+
+  let banner = null;
+  if (n && deklariert === n) {
+    const regel = beschluesse().paare.find((p) => p.klasse === "regel");
+    banner = el("p", { class: "ready-banner ok", role: "status" }, icon("ok"), el("span", {},
+      "Ready komplett. ", regel ? ["Laut ", el("a", { href: ankerLink(regel.thread, regel.antwort), text: `Beschluss ${regel.thread.nummer}` }), " "] : "",
+      "meldet jetzt eine KI ‚Tag jetzt?‘ als Frage – du gibst frei."));
+  } else if (n && stand.every((x) => x.r.status === "x" || x.art === "erfuellt")) {
+    banner = el("p", { class: "ready-banner", role: "status" }, icon("ready"), "Alle Ready-Punkte sind laut Punkten erfüllt. R-Haken setzen?");
+  }
+
+  const gruppe = (titel, ic, zeilen) => (zeilen.length ? el("div", { class: "ready-gruppe" },
+    el("h3", {}, icon(ic), titel, el("span", { class: "zaehler leise", text: String(zeilen.length) })),
+    el("ul", { class: "ready-zeilen" }, zeilen)) : null);
+
+  const abhaken = stand.filter((x) => x.r.status !== "x" && x.art === "erfuellt").map((x) => {
+    const belegt = x.bezug.map((q) => `${q.punkt.id} erledigt ist (${datumLesbar(q.punkt.erledigt) || "?"})`);
+    if (x.zusage) {
+      const t = x.zusage.paar.thread;
+      return el("li", { class: "ready-zeile", "data-zeile": `ready:${x.r.id}` },
+        el("div", { class: "ready-zeile-text" },
+          el("div", {}, el("span", { class: "kennung", text: x.r.id }), " ", x.r.titel),
+          el("p", { class: "hinweis" }, el("b", { text: `erst Ergebnis melden (${t.nummer})` }), ` – ${aufzaehlen(x.bezug.map((q) => q.punkt.id))} ist abgehakt, das Ergebnis fehlt noch im Thread.`)),
+        el("button", { type: "button", class: "knopf zweit klein-knopf", "data-fokus": `ready-melden:${x.r.id}`, onclick: () => ergebnisMelden(t) }, "Ergebnis melden"));
+    }
+    return el("li", { class: "ready-zeile", "data-zeile": `ready:${x.r.id}` },
+      hakenKnopf(x.r, "ready", true),
+      el("div", { class: "ready-zeile-text" },
+        el("div", {}, el("span", { class: "kennung", text: x.r.id }), " ", x.r.titel),
+        el("p", { class: "hinweis", text: `weil ${aufzaehlen(belegt)}` }),
+        el("p", { class: "hinweis klein", text: `Ein R-Haken ist dein Urteil – prüfe, ob der Punkt die Bedingung wirklich belegt (${x.r.id}: „${x.r.titel}“).` })));
+  });
+  // Punkte, die ein noch offenes R aufhalten, mit den R dazu
+  const halten = new Map();
+  for (const x of stand) {
+    if (x.r.status === "x") continue;
+    for (const q of x.offen) {
+      if (!halten.has(q.punkt)) halten.set(q.punkt, []);
+      halten.get(q.punkt).push(x.r.id);
+    }
+  }
+  const nachzug = beschluesse().nachzug;
+  const beiDir = [];
+  const beiKis = [];
+  for (const [p, rs] of halten) {
+    const nz = nachzug.get(p.id);
+    const zeile = (zusatz) => el("li", { class: "ready-zeile kurz" },
+      el("span", {}, el("span", { class: "kennung", text: kurzName(p) }), ` → ${rs.join(", ")}`, zusatz ? el("span", { class: "hinweis", text: `: ${zusatz}` }) : null));
+    if (nz) beiKis.push(zeile(`Nachzug aus ${nz.paar.thread.nummer}`));
+    else if (p.wer === "code") beiKis.push(zeile(""));
+    else if (istBeiDir(p)) beiDir.push(zeile(""));
+  }
+  const ohne = stand.filter((x) => x.r.status !== "x" && x.art === "ohne").map((x) => el("li", { class: "ready-zeile" },
+    el("div", { class: "ready-zeile-text" },
+      el("div", {}, el("span", { class: "kennung", text: x.r.id }), " ", x.r.titel),
+      x.r.fehlt ? el("p", { class: "hinweis", text: `fehlt laut Ready: ${x.r.fehlt}` }) : null),
+    anstossZiel() ? el("button", { type: "button", class: "knopf zweit klein-knopf", "data-fokus": `ready-vorschlag:${x.r.id}`, onclick: () => punktVorschlagen(x) }, icon("plus"), "Punkt vorschlagen") : null));
+
+  return el("section", { class: "karte ready-karte", "aria-labelledby": "ready-karte-titel" },
+    el("h3", { id: "ready-karte-titel", class: "ready-karte-titel" }, icon("ready"), version ? `Bis v${version}` : "Bis zum Tag"),
+    leiste,
+    el("p", { class: "ready-satz", text: satz.join(" · ") }),
+    banner,
+    el("div", { class: "ready-gruppen" },
+      gruppe("Kannst du abhaken", "ok", abhaken),
+      gruppe("Bei dir", "handlauf", beiDir),
+      gruppe("Bei den KIs", "code", beiKis),
+      gruppe("Ohne Punkt", "info", ohne)));
+}
+
+/* --- Beschlussbuch: alle Entscheidungen an einem Ort --- */
+/* Geheimnisse (PIN in einer eigenen Antwort) auch hier nur maskiert zeigen. */
+function ohneGeheimnis(text) {
+  const funde = geheimnisFinden(text);
+  return funde.length ? geheimnisseErsetzen(text, funde) : String(text || "");
+}
+function beruehrtNichtVorReady(paar) {
+  const rm = zustand.roadmap;
+  for (const eintrag of (rm && rm.nicht_vor_ready) || []) {
+    const kopf = eintrag.split(" (")[0].trim();
+    if (kopf.length >= 5 && paar.f.frage.includes(kopf)) return eintrag;
+    const k = kennungNorm(eintrag);
+    if (k && paar.f.roadmap.some((t) => kennungNorm(t) === k)) return eintrag;
+  }
+  return "";
+}
+function beschlussbuchZeichnen() {
+  const { paare } = beschluesse();
+  if (!paare.length) return null;
+  const gefolgt = paare.filter((p) => p.wahl && p.wahl !== "eigen" && p.wahl === p.empfohlen).length;
+  const eigen = paare.filter((p) => p.wahl === "eigen").length;
+  const abweichend = paare.filter((p) => p.wahl && p.wahl !== "eigen" && p.empfohlen && p.wahl !== p.empfohlen);
+  const kopf = [`${anzahl(paare.length, "Beschluss", "Beschlüsse")}`, `Empfehlung gefolgt ${gefolgt}×`, `eigene Antwort ${eigen}×`,
+    `abweichend ${abweichend.length}×${abweichend.length ? ` (${abweichend.map((p) => p.thread.nummer).join(", ")})` : ""}`].join(" · ");
+  const ready = new Map(((zustand.roadmap && zustand.roadmap.ready) || []).map((r) => [r.id, r]));
+  const fehlen = new Map();
+  for (const t of new Set(paare.map((p) => p.thread))) for (const x of angabenFehlen(t)) fehlen.set(x.frage, x);
+  const zelle = (name, ...inhalt) => el("td", {}, el("span", { class: "spalte", "aria-hidden": "true", text: name }), ...inhalt);
+  const zeilen = [...paare].sort((a, b) => b.antwort.zeit.localeCompare(a.antwort.zeit) || b.thread.slug.localeCompare(a.thread.slug)).map((p) => {
+    const wahl = p.wahl === "eigen" ? `eigene Antwort: ${kuerzen(ohneGeheimnis(p.wahlText), 80)}`
+      : p.wahl === p.empfohlen ? `${p.wahl} ★ Empfehlung` : p.empfohlen ? `${p.wahl} – Empfehlung war ${p.empfohlen}` : p.wahl || "–";
+    const bezug = [
+      ...p.punkte.map((t) => (t.punkt.status === "x" ? `✓ ${t.punkt.id}` : `offen: ${t.punkt.id}`)),
+      ...p.rTokens.map((id) => (ready.has(id) && ready.get(id).status === "x" ? `✓ ${id}` : id)),
+    ];
+    const fehlt = fehlen.get(p.frage);
+    const angabe = fehlt
+      ? el("a", { href: ankerLink(p.thread, fehlt.b), class: "angabe-fehlt-link" }, icon("warnung"), `fehlt: ${ANGABE[fehlt.a.art].kurz}`)
+      : Object.keys(p.angaben).length ? `${Object.keys(p.angaben).join(", ")} ✓` : "";
+    const nvr = beruehrtNichtVorReady(p);
+    return el("tr", { "data-zeile": `buch:${p.thread.nummer}` },
+      zelle("Datum", datumLesbar(p.antwort.zeit)),
+      zelle("Thread", el("a", { href: ankerLink(p.thread, p.antwort), class: "kennung", text: p.thread.nummer })),
+      zelle("Frage", kuerzen(ohneGeheimnis(p.f.frage), 80),
+        nvr ? el("span", { class: "marke leise nvr", title: "Bewusst geparkt bis 0.9.0b1 – der Beschluss berührt das Thema" }, `berührt ‚Nicht vor Ready‘: ${nvr}`) : null),
+      zelle("Wahl", wahl),
+      zelle("Bezug", bezug.length ? bezug.join(" · ") : "–"),
+      zelle("Angabe", angabe));
+  });
+  const tabelle = el("div", { class: "tabelle buch-tabelle", tabindex: "0", role: "region", "aria-label": "Beschlussbuch" },
+    el("table", {},
+      el("thead", {}, el("tr", {}, ["Datum", "Thread", "Frage", "Wahl", "Bezug", "Angabe"].map((s) => el("th", { scope: "col", text: s })))),
+      el("tbody", {}, zeilen)));
+  return aufklappen(el("details", { class: "karte beschlussbuch" },
+    el("summary", {}, icon("entscheidung", "buch-ic"), el("span", { class: "buch-name", text: "Beschlussbuch" }),
+      el("span", { class: "zaehler leise", text: String(paare.length) }), icon("runter", "chevron")),
+    el("p", { class: "buch-kopf", text: kopf }),
+    tabelle), "beschlussbuch", false);
+}
+
 /* --- Roadmap --- */
 
 function roadmapZeichnen() {
@@ -2708,21 +2991,32 @@ function roadmapZeichnen() {
   if ((rm.ready || []).length) {
     const r = rm.ready;
     const rFertig = r.filter((q) => q.status === "x").length;
+    const stand = readyStand();
+    const ziel = anstossZiel();
     readyBox.append(
       el("div", { class: "abschnitt-kopf" },
-        el("h2", {}, icon("ready"), "„Ready“ für 0.9.0b1", el("span", { class: "zaehler leise", text: `${rFertig}/${r.length}` })),
+        el("h2", {}, icon("ready"), `„Ready“ für ${releaseVersion() || "den Tag"}`, el("span", { class: "zaehler leise", text: `${rFertig}/${r.length}` })),
         el("p", { class: "hinweis", text: "Die Eintrittskarten für die Beta. Auch hier: Kreis anklicken = erfüllt." })),
-      el("div", { class: "ready", "data-hakenliste": "ready" }, r.map((q) => {
+      readyKarteZeichnen(stand),
+      el("div", { class: "ready", "data-hakenliste": "ready" }, stand.map((x) => {
+        const q = x.r;
         const s = anzeigeStatus(q);
         return el("div", { class: "karte ready-kachel" + (s === "x" ? " ist-fertig" : ""), "data-zeile": q.id },
           hakenKnopf(q, "ready", true),
           el("div", {},
             el("div", { class: "ready-titel" }, el("span", { class: "kennung", text: q.id }), " ", q.titel),
-            q.fehlt && q.status !== "x" ? el("p", { class: "fehlt" }, el("b", { text: "fehlt: " }), q.fehlt) : null));
+            q.fehlt && q.status !== "x" ? el("p", { class: "fehlt" }, el("b", { text: "fehlt: " }), q.fehlt) : null,
+            q.status !== "x" && x.bezug.length ? el("div", { class: "ready-chips" }, x.bezug.map(readyChip)) : null,
+            q.status !== "x" && x.widerspruch.length ? el("div", { class: "widerspruch-box" },
+              el("p", { class: "hinweis widerspruch", role: "note", text: widerspruchSatz(x.widerspruch) }),
+              ziel ? el("button", { type: "button", class: "knopf zweit klein-knopf", "data-fokus": `ready-widerspruch:${q.id}`, onclick: () => widerspruchMelden(x) },
+                icon("senden"), `An ${ziel.nummer} melden`) : null) : null));
       })),
     );
   }
 
+  const buch = beschlussbuchZeichnen();
+  if (buch) extra.append(buch);
   if ((rm.risiken || []).length) {
     extra.append(el("div", { class: "abschnitt-kopf" }, el("h2", {}, icon("warnung"), "Risiken")),
       el("ul", { class: "karte risiken" }, rm.risiken.map((r) => el("li", {}, icon("warnung"), el("span", { text: r })))));
@@ -3909,7 +4203,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-22";
+const FASSUNG = "2026.10.03-23";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');

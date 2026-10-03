@@ -66,6 +66,15 @@ Mehrere Haken schnell hintereinander werden nacheinander geschrieben.
   Beitragsfeld), *Anträge ohne Antwort* unter den Fragen, *Termine* aus Beschlüssen
   in der Lage und am Meilenstein im Flussdiagramm.
 
+**Bis zum Tag:** Über den Ready-Kacheln steht eine Leiste R1–R10 (Farbe = Status in
+`roadmap.json`, gestrichelt = die Punkte sagen etwas anderes) und vier Gruppen: was du
+abhaken kannst, was bei dir oder bei den KIs liegt, und welche R keinen Punkt haben
+(„Punkt vorschlagen“ legt einen `ANTRAG`-Entwurf an). Verknüpft wird über ein optionales
+Feld `"ready": ["R5"]` am Punkt, über „(R4)“ in Titel oder Notiz, über die Kennungen in
+`fehlt` und über die Roadmap-Zeile einer FRAGE. Nennt `fehlt` etwas, das schon erledigt ist,
+steht das als Hinweis an der Kachel. Das **Beschlussbuch** (unter der Roadmap) listet alle
+Entscheidungen mit Wahl, Bezug und fehlender Angabe; Geheimnisse erscheinen dort maskiert.
+
 **Hebel:** Jeder offene Punkt bei dir trägt, was sein Haken auslöst („schließt M1 · gibt 4 frei“
 oder „M4: danach noch 3 offen“), die Lage nennt den größten Hebel mit „Hinspringen“, und
 „Sortieren: nach Wirkung“ ordnet die Liste danach (gemerkt im Browser). Nach dem Haken sagt
