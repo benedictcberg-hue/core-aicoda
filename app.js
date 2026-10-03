@@ -1552,73 +1552,127 @@ async function starten() {
   }
 }
 
-for (const e of document.querySelectorAll("[data-icon]")) {
-  const ic = icon(e.dataset.icon);
-  if (e.tagName === "SPAN" && !e.childNodes.length) e.replaceWith(ic); else e.prepend(ic);
+/* Fassung: steht gleich in index.html (meta + ?v= an jeder Datei), style.css (--pult-version)
+ * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
+ * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
+ * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
+const FASSUNG = "2026.10.03-4";
+
+function fassungStimmt() {
+  const meta = document.querySelector('meta[name="pult-version"]');
+  let css = "";
+  try { css = getComputedStyle(document.documentElement).getPropertyValue("--pult-version").trim(); } catch (_) { /* egal */ }
+  return !!meta && meta.content === FASSUNG && css === `"${FASSUNG}"`;
 }
-for (const e of document.querySelectorAll("[data-icon-nach]")) e.append(icon(e.dataset.iconNach));
-themaAnwenden();
 
-$("thema").addEventListener("click", () => {
-  const i = THEMEN.findIndex((x) => x.wert === thema);
-  thema = THEMEN[(i + 1) % THEMEN.length].wert;
-  try {
-    if (thema === "auto") localStorage.removeItem(THEMA_SCHLUESSEL); else localStorage.setItem(THEMA_SCHLUESSEL, thema);
-  } catch (_) { /* gesperrt: gilt nur bis zum Neuladen */ }
+/* Passt etwas nicht zusammen: einmal mit frischer Adresse laden (umgeht den Cache für
+ * index.html). Steht die Marke schon in der Adresse, nicht noch einmal, sondern sagen, was los ist. */
+function fassungPruefen() {
+  const adresse = new URL(location.href);
+  if (fassungStimmt()) {
+    if (adresse.searchParams.has("neu")) {
+      adresse.searchParams.delete("neu");
+      try { history.replaceState(null, "", adresse.pathname + adresse.search + adresse.hash); } catch (_) { /* egal */ }
+    }
+    return true;
+  }
+  if (adresse.searchParams.get("neu") !== FASSUNG) {
+    adresse.searchParams.set("neu", FASSUNG);
+    location.replace(adresse.href);
+    return false;
+  }
+  // Ohne passendes Stylesheet: Hinweis über CSSOM gestalten (CSP verbietet style-Attribute).
+  const hinweis = document.createElement("div");
+  hinweis.id = "fassung-hinweis";
+  hinweis.setAttribute("role", "alert");
+  Object.assign(hinweis.style, {
+    margin: "16px", padding: "16px", borderRadius: "12px", background: "#fdebe1", color: "#5a1d05",
+    font: "15px/1.5 'Segoe UI', system-ui, sans-serif", border: "1px solid #f3b79a",
+  });
+  const knopf = document.createElement("button");
+  knopf.type = "button";
+  knopf.textContent = "Neu laden";
+  Object.assign(knopf.style, { marginTop: "10px", padding: "8px 16px", font: "inherit", fontWeight: "600", cursor: "pointer" });
+  knopf.addEventListener("click", () => location.reload());
+  const text = document.createElement("div");
+  text.textContent = "Das Pult wurde gerade aktualisiert, dein Browser hat aber noch Teile der alten Fassung. "
+    + "Bitte in ein paar Minuten neu laden. Hilft das nicht: Website-Daten für benedictcberg-hue.github.io löschen.";
+  hinweis.append(text, knopf);
+  document.body.prepend(hinweis);
+  return false;
+}
+
+function verdrahten() {
+  for (const e of document.querySelectorAll("[data-icon]")) {
+    const ic = icon(e.dataset.icon);
+    if (e.tagName === "SPAN" && !e.childNodes.length) e.replaceWith(ic); else e.prepend(ic);
+  }
+  for (const e of document.querySelectorAll("[data-icon-nach]")) e.append(icon(e.dataset.iconNach));
   themaAnwenden();
-});
-$("token-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const wert = $("token-eingabe").value.trim();
-  if (!wert) return;
-  zustand.token = wert;
-  zustand.gateOk = false;
-  speicherSchreiben(TOKEN_SCHLUESSEL, wert, $("token-merken").checked);
-  $("token-eingabe").value = "";
-  $("anmeldung-fehler").hidden = true;
-  starten();
-});
-$("abmelden").addEventListener("click", () => {
-  speicherLoeschen(TOKEN_SCHLUESSEL);
-  speicherLoeschen(ENTWURF_SCHLUESSEL);
-  for (const k of Object.keys(entwuerfe)) delete entwuerfe[k];
-  zustand.token = "";
-  zustand.threads = [];
-  zustand.roadmap = null;
-  zustand.gateOk = false;
-  document.title = SEITENTITEL;
-  $("kopf-unter").textContent = "CORE-Forum · Roadmap 0.9.0b1 → 1.0";
-  for (const id of ["verbindung", "neu-laden", "abmelden", "reiter", "fuss"]) $(id).hidden = true;
-  meldungZu();
-  zeigen("anmeldung");
-});
-$("neu-laden").addEventListener("click", () => starten());
-$("thread-suche").addEventListener("input", threadListeZeichnen);
-$("nur-offene").addEventListener("change", threadListeZeichnen);
-window.addEventListener("hashchange", () => { route(); window.scrollTo(0, 0); });
-let flussTimer = null;
-window.addEventListener("resize", () => {
-  clearTimeout(flussTimer);
-  flussTimer = setTimeout(() => { if (zustand.roadmap) mitFokus(flussZeichnen); }, 150);
-});
 
-const meldung = $("meldung");
-meldung.addEventListener("mouseenter", () => clearTimeout(meldungTimer));
-meldung.addEventListener("focusin", () => clearTimeout(meldungTimer));
-meldung.addEventListener("mouseleave", () => { if (!meldung.contains(document.activeElement)) meldungSpaeterZu(4000); });
-meldung.addEventListener("focusout", (e) => { if (!meldung.contains(e.relatedTarget)) meldungSpaeterZu(4000); });
+  $("thema").addEventListener("click", () => {
+    const i = THEMEN.findIndex((x) => x.wert === thema);
+    thema = THEMEN[(i + 1) % THEMEN.length].wert;
+    try {
+      if (thema === "auto") localStorage.removeItem(THEMA_SCHLUESSEL); else localStorage.setItem(THEMA_SCHLUESSEL, thema);
+    } catch (_) { /* gesperrt: gilt nur bis zum Neuladen */ }
+    themaAnwenden();
+  });
+  $("token-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const wert = $("token-eingabe").value.trim();
+    if (!wert) return;
+    zustand.token = wert;
+    zustand.gateOk = false;
+    speicherSchreiben(TOKEN_SCHLUESSEL, wert, $("token-merken").checked);
+    $("token-eingabe").value = "";
+    $("anmeldung-fehler").hidden = true;
+    starten();
+  });
+  $("abmelden").addEventListener("click", () => {
+    speicherLoeschen(TOKEN_SCHLUESSEL);
+    speicherLoeschen(ENTWURF_SCHLUESSEL);
+    for (const k of Object.keys(entwuerfe)) delete entwuerfe[k];
+    zustand.token = "";
+    zustand.threads = [];
+    zustand.roadmap = null;
+    zustand.gateOk = false;
+    document.title = SEITENTITEL;
+    $("kopf-unter").textContent = "CORE-Forum · Roadmap 0.9.0b1 → 1.0";
+    for (const id of ["verbindung", "neu-laden", "abmelden", "reiter", "fuss"]) $(id).hidden = true;
+    meldungZu();
+    zeigen("anmeldung");
+  });
+  $("neu-laden").addEventListener("click", () => starten());
+  $("thread-suche").addEventListener("input", threadListeZeichnen);
+  $("nur-offene").addEventListener("change", threadListeZeichnen);
+  window.addEventListener("hashchange", () => { route(); window.scrollTo(0, 0); });
+  let flussTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(flussTimer);
+    flussTimer = setTimeout(() => { if (zustand.roadmap) mitFokus(flussZeichnen); }, 150);
+  });
 
-/* „/“ springt in die Thread-Suche, Esc schließt die Meldung. */
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !meldung.hidden) { meldungZu(); return; }
-  if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
-  const z = e.target;
-  if (z && (z.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(z.tagName))) return;
-  if (!zustand.token || !hatDaten()) return;
-  e.preventDefault();
-  if (location.hash !== "#threads") { location.hash = "#threads"; route(); }
-  $("thread-suche").focus();
-});
+  const meldung = $("meldung");
+  meldung.addEventListener("mouseenter", () => clearTimeout(meldungTimer));
+  meldung.addEventListener("focusin", () => clearTimeout(meldungTimer));
+  meldung.addEventListener("mouseleave", () => { if (!meldung.contains(document.activeElement)) meldungSpaeterZu(4000); });
+  meldung.addEventListener("focusout", (e) => { if (!meldung.contains(e.relatedTarget)) meldungSpaeterZu(4000); });
 
-zustand.token = speicherLesen(TOKEN_SCHLUESSEL);
-if (zustand.token) starten(); else zeigen("anmeldung");
+  /* „/“ springt in die Thread-Suche, Esc schließt die Meldung. */
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !meldung.hidden) { meldungZu(); return; }
+    if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+    const z = e.target;
+    if (z && (z.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(z.tagName))) return;
+    if (!zustand.token || !hatDaten()) return;
+    e.preventDefault();
+    if (location.hash !== "#threads") { location.hash = "#threads"; route(); }
+    $("thread-suche").focus();
+  });
+
+  zustand.token = speicherLesen(TOKEN_SCHLUESSEL);
+  if (zustand.token) starten(); else zeigen("anmeldung");
+}
+
+if (fassungPruefen()) verdrahten();
