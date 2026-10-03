@@ -35,6 +35,7 @@ const zustand = {
   neu: null,            // was seit dem letzten Besuch passiert ist (neuesErmitteln)
   rest: null,           // X-RateLimit-Remaining der letzten Antwort
   wartet: new Map(),    // Thread-Pfad → Anhang in der Atempause {bis, sorte, nummer, quelle, arbeit …}
+  zuendung: null,       // {ms, bis}: Meilenstein, der gerade durch einen Haken fertig wurde
 };
 
 /* Während laden() läuft: was seit Ladebeginn geschrieben wurde. Das ist neuer als der Baum,
@@ -110,6 +111,7 @@ const ICONS = {
   plus: ["M12 5v14", "M5 12h14"],
   minus: ["M5 12h14"],
   person: [{ kreis: [12, 8, 4] }, "M4 21a8 8 0 0 1 16 0"],
+  hebel: ["M13 2 3 14h9l-1 8 10-12h-9l1-8z"],
   schild: ["M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z", "M12 8v4", "M12 16h.01"],
 };
 
@@ -954,6 +956,7 @@ async function abhaken(eintrag, art, vorgabe) {
     getippt = notizBereit(id);
   }
   const notiz = [vorgabe, getippt].filter(Boolean).join(" · ");
+  const st0 = art === "punkt" && zustand.roadmap ? graphStand(zustand.roadmap) : null;
   statusSchreiben({
     id, art, ziel: "x",
     betreff: (vorher) => (vorher.status === "x" ? `${id} Notiz` : `${id} erledigt`),
@@ -973,7 +976,14 @@ async function abhaken(eintrag, art, vorgabe) {
     erfolg: (ergebnis) => {
       if (!ergebnis.geaendert) { melden(`${id} war schon erledigt.`, { fokus: `haken:${id}` }); return; }
       if (getippt) { entwurfSetzen(notizSchluessel, ""); zustand.offen.delete(`notizfeld:${id}`); roadmapTeileZeichnen(); }
-      const text = ergebnis.vorher.status === "x" ? `${id} war schon erledigt – Notiz ergänzt.` : `${id} abgehakt.`;
+      let text = `${id} abgehakt.`;
+      if (ergebnis.vorher.status === "x") text = `${id} war schon erledigt – Notiz ergänzt.`;
+      else if (st0 && zustand.roadmap) {
+        const folge = folgeSatz(id, st0, graphStand(zustand.roadmap));
+        text = folge.text;
+        // Für das Flussdiagramm: der fertige Meilenstein „zündet“ kurz.
+        if (folge.fertig) zustand.zuendung = { ms: folge.fertig, bis: Date.now() + 1500 };
+      }
       melden(text, { aktion: rueckgaengig(id, art, ergebnis), fokus: `haken:${id}` });
     },
   });
@@ -1536,7 +1546,8 @@ function lageHinweise() {
       el("span", {},
         el("span", {}, `${kurzDatum(termin.tag)} · ${terminEtikett(termin)} (${termin.paar.thread.nummer}) · `),
         el("span", { class: "termin-rel", text: relativ(termin.tage) }),
-        offen.length ? el("span", { class: "termin-vor", text: `bis dahin bei dir offen: ${offen.join(" · ")}` }) : null)));
+        offen.length ? el("span", { class: "termin-vor" }, "bis dahin bei dir offen: ",
+          offen.flatMap((id, i) => [i ? " · " : "", el("span", { class: "am-stueck", text: id })])) : null)));
   }
   const zusage = zusagenOffen().filter((z) => z.frist && tageBis(z.frist) <= 3).sort((a, b) => a.frist - b.frist)[0];
   if (zusage) {
@@ -1548,6 +1559,21 @@ function lageHinweise() {
         el("span", { class: "termin-rel", text: relativ(tageBis(zusage.frist)) }),
         zusage.abgehakt ? el("span", { class: "termin-vor", text: `${zusage.abgehakt.id} ist schon abgehakt – das Ergebnis fehlt noch im Thread.` }) : null),
       el("button", { type: "button", class: "knopf zweit klein-knopf", "data-fokus": `zusage:${t.slug}`, onclick: () => ergebnisMelden(t) }, "Ergebnis melden")));
+  }
+  const besterHebel = [...hebelBeiDir(meineAufgaben().filter(({ punkt }) => istBeiDir(punkt))).values()].sort(hebelRang)[0];
+  if (besterHebel && besterHebel.gibtFrei.length) {
+    const st = graphStand(zustand.roadmap);
+    const { punkt, ms, gibtFrei } = besterHebel;
+    const art = punkt.wer === "betreiber" ? "eine Entscheidung" : "ein Handlauf";
+    const wartet = st.vor.get(ms).filter((v) => !st.fertig(v))
+      .map((v) => `${v}: ${st.zahl.get(v).offen.map((q) => `${q.id}, ${q.wer === "code" ? "KI" : "du"}`).join(" · ")}`);
+    zeilen.push(el("li", { class: "hinweis-hebel", "data-rolle": "hebel", title: st.g.ausJson ? null : "Abhängigkeiten laut Forum-README" },
+      icon("hebel"),
+      el("span", {},
+        el("b", { text: `Dein größter Hebel: ${punkt.id}` }),
+        ` – ${art}. Schließt ${ms}; danach hängen ${aufzaehlen(gibtFrei)} nicht mehr an ${ms}.`,
+        wartet.length ? el("span", { class: "termin-vor", text: `(${ms} wartet selbst noch auf ${wartet.join("; ")})` }) : null),
+      el("button", { type: "button", class: "knopf zweit klein-knopf", "data-fokus": "hebel:hin", onclick: () => springenZu(`haken:${punkt.id}`) }, icon("pfeil"), "Hinspringen")));
   }
   return zeilen.length ? el("ul", { class: "lage-hinweise" }, zeilen) : null;
 }
@@ -1647,17 +1673,35 @@ function zugRoadmapZeichnen() {
   if (!zustand.roadmap) al.append(leer("info", "Keine roadmap.json im Forum gefunden."));
   else if (!aufgaben.length) al.append(leer("ok", "Nichts offen, das bei dir liegt.", "Alles abgehakt. Neue Punkte erscheinen hier, sobald eine KI sie in roadmap.json einträgt."));
   else {
+    const hebelMap = hebelBeiDir(aufgaben);
+    const termine = terminePunkte();
+    const nachWirkung = sortierung() === "wirkung";
+    const knopf = (wert, text) => el("button", {
+      type: "button", class: "knopf zweit klein-knopf", "aria-pressed": sortierung() === wert ? "true" : "false", "data-fokus": `sortierung:${wert}`,
+      onclick: () => { sortierungSetzen(wert); mitFokus(zugRoadmapZeichnen, `sortierung:${wert}`); },
+    }, text);
+    al.append(el("div", { class: "sortierung", role: "group", "aria-label": "Sortierung" },
+      el("span", { class: "sortierung-name", text: "Sortieren:" }), knopf("meilenstein", "nach Meilenstein"), knopf("wirkung", "nach Wirkung")));
     const karte = el("div", { class: "karte checkliste-karte", "data-hakenliste": "aufgaben" });
-    let gruppe = null;
-    let liste = null;
-    for (const a of aufgaben) {
-      if (a.meilenstein !== gruppe) {
-        gruppe = a.meilenstein;
-        karte.append(el("div", { class: "gruppe" }, el("span", { class: "gruppe-id", text: gruppe.id }), gruppe.titel));
-        liste = el("ul", { class: "checkliste" });
-        karte.append(liste);
+    if (nachWirkung) {
+      // Wirkung zuerst; ein Termin steht nie unter Punkten ohne Wirkung.
+      const gruppe = (a) => { const h = hebelMap.get(a.punkt.id); return h && (h.gibtFrei.length || h.schliesst) ? 2 : termine.has(a.punkt.id) ? 1 : 0; };
+      const leer0 = { gibtFrei: [], schliesst: false, kritisch: false, ebene: 99 };
+      const sortiert = [...aufgaben].sort((a, b) => gruppe(b) - gruppe(a)
+        || hebelRang({ ...leer0, ...hebelMap.get(a.punkt.id), punkt: a.punkt }, { ...leer0, ...hebelMap.get(b.punkt.id), punkt: b.punkt }));
+      karte.append(el("ul", { class: "checkliste" }, sortiert.map((a) => aufgabeZeile(a, { hebel: hebelMap.get(a.punkt.id), termin: termine.get(a.punkt.id), msZeigen: true }))));
+    } else {
+      let gruppe = null;
+      let liste = null;
+      for (const a of aufgaben) {
+        if (a.meilenstein !== gruppe) {
+          gruppe = a.meilenstein;
+          karte.append(el("div", { class: "gruppe" }, el("span", { class: "gruppe-id", text: gruppe.id }), gruppe.titel));
+          liste = el("ul", { class: "checkliste" });
+          karte.append(liste);
+        }
+        liste.append(aufgabeZeile(a, { hebel: hebelMap.get(a.punkt.id), termin: termine.get(a.punkt.id) }));
       }
-      liste.append(aufgabeZeile(a));
     }
     al.append(karte);
   }
@@ -1696,7 +1740,31 @@ function lageZeichnen(aufgaben) {
   );
 }
 
-function aufgabeZeile({ punkt }) {
+const SORTIERUNG_SCHLUESSEL = "core-pult-sortierung";
+function sortierung() {
+  try { return localStorage.getItem(SORTIERUNG_SCHLUESSEL) === "wirkung" ? "wirkung" : "meilenstein"; } catch (_) { return "meilenstein"; }
+}
+function sortierungSetzen(wert) {
+  try { if (wert === "wirkung") localStorage.setItem(SORTIERUNG_SCHLUESSEL, wert); else localStorage.removeItem(SORTIERUNG_SCHLUESSEL); } catch (_) { /* gesperrt */ }
+}
+/* Chip „schließt M1 · gibt 4 frei“ / „M4: danach noch 3 offen“ / Termin, mit vollem Satz für Screenreader. */
+function wirkungChip(id, h, termin) {
+  let chip = null;
+  let satz = "";
+  if (termin) {
+    chip = el("span", { class: "marke zug" }, icon("uhr"), `Termin ${kurzDatum(termin.tag)}`);
+    satz = `Termin ${langDatum(termin.tag)} (${termin.paar.thread.nummer}).`;
+  } else if (h && h.schliesst) {
+    chip = el("span", { class: "marke zug hebel-chip" }, icon("hebel"), `schließt ${h.ms}${h.gibtFrei.length ? ` · gibt ${h.gibtFrei.length} frei` : ""}`);
+    satz = `Schließt ${h.ms}${h.gibtFrei.length ? ` und gibt ${aufzaehlen(h.gibtFrei)} frei` : ""}.`;
+  } else if (h) {
+    chip = el("span", { class: "marke leise hebel-chip" }, `${h.ms}: danach noch ${h.rest} offen`);
+    satz = `${h.ms}: danach noch ${h.rest} offen.`;
+  }
+  return chip ? { chip, satz: el("span", { class: "sr-nur", id: `hebel-${id}`, text: satz }) } : null;
+}
+
+function aufgabeZeile({ punkt, meilenstein }, wirkung = {}) {
   const id = punkt.id;
   const status = anzeigeStatus(punkt);
   const notizSchluessel = `notiz:${id}`;
@@ -1724,15 +1792,23 @@ function aufgabeZeile({ punkt }) {
     },
   }, icon("notiz"));
 
+  const chip = status === "x" ? null : wirkungChip(id, wirkung.hebel, wirkung.termin);
+  const haken = hakenKnopf(punkt, "punkt");
+  if (chip) haken.setAttribute("aria-describedby", `hebel-${id}`);
   return el("li", { class: "aufgabe" + (status === "x" ? " ist-fertig" : ""), "data-zeile": id },
-    hakenKnopf(punkt, "punkt"),
+    haken,
     el("div", { class: "aufgabe-haupt" },
-      el("div", { class: "aufgabe-titel" }, el("span", { class: "kennung", text: id }), " ", punkt.titel),
+      el("div", { class: "aufgabe-titel" },
+        wirkung.msZeigen && meilenstein ? el("span", { class: "gruppe-id", text: meilenstein.id }) : null,
+        wirkung.msZeigen && meilenstein ? " " : null,
+        el("span", { class: "kennung", text: id }), " ", punkt.titel),
+      chip ? chip.satz : null,
       punkt.notiz ? el("p", { class: "aufgabe-notiz", text: punkt.notiz }) : null,
       t ? threadVerweis(t) : null,
       notizFeld),
     el("div", { class: "aufgabe-rechts" },
       punkt.status === "~" ? el("span", { class: "marke teil", text: "teilweise" }) : null,
+      chip ? chip.chip : null,
       werMarke(punkt.wer, false),
       notizKnopf),
   );
@@ -2738,6 +2814,80 @@ function flussGraph(rm) {
     }
   }
   return { knoten: ms, kanten, kette, ebene, zeile, ausJson };
+}
+
+/* Stand des Graphen, rein und ohne DOM. Punkte in „gedacht“ zählen als erledigt
+ * (Hebel, Probe). Ein leerer Meilenstein ist nie fertig, wie in meilensteinZahlen. */
+function graphStand(rm, gedacht = new Set()) {
+  const g = flussGraph(rm);
+  const zahl = new Map();
+  for (const m of g.knoten) {
+    const p = m.punkte || [];
+    const offen = p.filter((q) => q.status !== "x" && !gedacht.has(q.id));
+    zahl.set(m.id, { n: p.length, x: p.length - offen.length, t: p.filter((q) => q.status === "~" && !gedacht.has(q.id)).length, offen, fertig: p.length > 0 && !offen.length });
+  }
+  const vor = new Map(g.knoten.map((m) => [m.id, []]));
+  const nach = new Map(g.knoten.map((m) => [m.id, []]));
+  for (const k of g.kanten) { vor.get(k.nach).push(k.von); nach.get(k.von).push(k.nach); }
+  const fertig = (id) => !!(zahl.get(id) && zahl.get(id).fertig);
+  return {
+    g, zahl, vor, nach, fertig,
+    frei: (id) => (vor.get(id) || []).every(fertig),
+    vorfahren: (id) => vorfahrenVon(g, id),
+  };
+}
+/* Was ein Haken an punkt (in Meilenstein ms) auslöst. */
+function hebel(rm, punkt, ms, st0 = graphStand(rm)) {
+  const st1 = graphStand(rm, new Set([punkt.id]));
+  return {
+    punkt, ms,
+    schliesst: !st0.fertig(ms) && st1.fertig(ms),
+    gibtFrei: (st0.nach.get(ms) || []).filter((s) => !st0.frei(s) && st1.frei(s)),
+    rest: st1.zahl.get(ms) ? st1.zahl.get(ms).offen.length : 0,
+    kritisch: st0.g.kette.includes(ms),
+    ebene: st0.g.ebene.get(ms) || 0,
+  };
+}
+const hebelRang = (a, b) => b.gibtFrei.length - a.gibtFrei.length || Number(b.schliesst) - Number(a.schliesst)
+  || Number(b.kritisch) - Number(a.kritisch) || Number(a.punkt.wer !== "betreiber") - Number(b.punkt.wer !== "betreiber")
+  || a.ebene - b.ebene;
+/* „M2, M3, M4 und M6“ */
+function aufzaehlen(liste) {
+  return liste.length < 2 ? liste.join("") : `${liste.slice(0, -1).join(", ")} und ${liste[liste.length - 1]}`;
+}
+/* Hebel aller Punkte bei dir, gemeinsam gerechnet (ein Ausgangsstand). */
+function hebelBeiDir(aufgaben) {
+  const rm = zustand.roadmap;
+  const aus = new Map();
+  if (!rm) return aus;
+  const st0 = graphStand(rm);
+  for (const { meilenstein, punkt } of aufgaben) if (punkt.status !== "x") aus.set(punkt.id, hebel(rm, punkt, meilenstein.id, st0));
+  return aus;
+}
+/* Punkte mit Termin: getroffen vom Beschluss, sonst die bei dir offenen im Ziel-Meilenstein. */
+function terminePunkte() {
+  const aus = new Map();
+  for (const x of termineAktiv()) {
+    const ids = x.paar.punkte.length ? x.paar.punkte.map((t) => t.punkt.id)
+      : roadmapPunkte().filter(({ meilenstein, punkt }) => meilenstein.id === x.ms && istBeiDir(punkt)).map(({ punkt }) => punkt.id);
+    for (const id of ids) if (!aus.has(id)) aus.set(id, x);
+  }
+  return aus;
+}
+/* Folgesatz nach einem Haken: was ist dadurch frei geworden? */
+function folgeSatz(id, st0, st1) {
+  const ms = (roadmapPunkte().find(({ punkt }) => punkt.id === id) || {}).meilenstein;
+  if (!ms || !st1.zahl.has(ms.id)) return { text: `${id} abgehakt.`, fertig: null };
+  if (st0.fertig(ms.id) || !st1.fertig(ms.id)) {
+    const rest = st1.zahl.get(ms.id).offen.length;
+    return { text: `${id} abgehakt. ${ms.id}: ${rest ? `noch ${rest} offen` : "nichts mehr offen"}.`, fertig: null };
+  }
+  const nach = st1.nach.get(ms.id) || [];
+  const frei = nach.filter((s) => !st0.frei(s) && st1.frei(s));
+  const teile = [];
+  if (frei.length) teile.push(`${aufzaehlen(frei)} ${frei.length === 1 ? "hat" : "haben"} jetzt keine offenen Vorgänger mehr`);
+  for (const s of nach.filter((x) => !st1.frei(x))) teile.push(`${s} wartet jetzt nur noch auf ${aufzaehlen(st1.vor.get(s).filter((v) => !st1.fertig(v)))}`);
+  return { text: `${id} abgehakt. ${ms.id} fertig${teile.length ? ` – ${teile.join("; ")}` : ""}.`, fertig: ms.id };
 }
 
 function flussZeichnen() {
@@ -3759,7 +3909,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-19";
+const FASSUNG = "2026.10.03-22";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');

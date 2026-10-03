@@ -66,6 +66,13 @@ Mehrere Haken schnell hintereinander werden nacheinander geschrieben.
   Beitragsfeld), *Anträge ohne Antwort* unter den Fragen, *Termine* aus Beschlüssen
   in der Lage und am Meilenstein im Flussdiagramm.
 
+**Hebel:** Jeder offene Punkt bei dir trägt, was sein Haken auslöst („schließt M1 · gibt 4 frei“
+oder „M4: danach noch 3 offen“), die Lage nennt den größten Hebel mit „Hinspringen“, und
+„Sortieren: nach Wirkung“ ordnet die Liste danach (gemerkt im Browser). Nach dem Haken sagt
+die Meldung, was frei geworden ist („M1 fertig – M2, M3, M4 und M6 haben jetzt keine offenen
+Vorgänger mehr.“). Gezählt wird nur die Meilensteinfolge: ob ein Handlauf vorher erlaubt ist,
+sagt sie nicht.
+
 Zugeordnet wird über die Zeile `Roadmap: M2 · B-8 · R1` der FRAGE: `B-8` trifft den
 Punkt mit dieser Kennung, `Anhang B 8` ist eine eigene Klasse.
 

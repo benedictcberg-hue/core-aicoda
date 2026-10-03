@@ -2,7 +2,7 @@
  * Farben nur als Tokens; hell, dunkel (System oder Schalter) und Windows-Kontrastmodus. */
 
 :root {
-  --pult-version: "2026.10.03-19";
+  --pult-version: "2026.10.03-22";
   --grund: #f3f5f8;
   --flaeche: #ffffff;
   --flaeche-2: #f2f5f9;
@@ -401,6 +401,7 @@ details[open] > summary .chevron { transform: rotate(180deg); }
 .lage-hinweise > li > span { flex: 1 1 14em; min-width: 0; }
 .lage-hinweise .knopf { min-height: 44px; }
 .termin-rel { color: var(--zug); font-weight: 700; }
+.am-stueck { white-space: nowrap; }
 .termin-vor { display: block; margin-top: 2px; color: var(--text-leise); font-size: 0.84rem; }
 .fluss-termin {
   display: inline-flex; align-items: center; gap: 4px; align-self: flex-start;
@@ -408,6 +409,13 @@ details[open] > summary .chevron { transform: rotate(180deg); }
   font-size: 0.72rem; font-weight: 700; white-space: nowrap;
 }
 .fluss-termin .ic { width: 1em; height: 1em; }
+
+/* Hebel: Sortierung und Lage-Zeile */
+.sortierung { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; }
+.sortierung-name { color: var(--text-leise); font-size: 0.86rem; margin-right: 2px; }
+.sortierung .knopf[aria-pressed="true"] { background: var(--akzent-hell); color: var(--akzent); border-color: color-mix(in srgb, var(--akzent) 45%, transparent); }
+.lage-hinweise > li.hinweis-hebel > .ic { color: var(--akzent); }
+.aufgabe-titel .gruppe-id { font-size: 0.74rem; }
 
 /* Wartet auf Nachzug */
 .nachzug { margin-top: 14px; padding: 0; overflow: hidden; }
@@ -1048,6 +1056,7 @@ mark { background: var(--teil-hell); color: inherit; border-radius: 3px; padding
   .nachzug-zeile { grid-template-columns: minmax(0, 1fr); padding: 12px 14px; }
   .nachzug-aktionen { flex-direction: row; flex-wrap: wrap; }
   .nachzug-aktionen .knopf, .nachzug-kopf .knopf { min-height: 44px; }
+  .sortierung .knopf { min-height: 44px; }
   .nachzug > summary, .nachzug-kopf { padding-left: 14px; padding-right: 14px; }
   /* Lage am Handy: Ring neben Ziel und Titel, alles Weitere volle Breite */
   .lage { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 14px; align-items: center; }
@@ -1127,6 +1136,7 @@ mark { background: var(--teil-hell); color: inherit; border-radius: 3px; padding
 /* Windows-Kontrastmodus: Systemfarben, damit Haken und Balken sichtbar bleiben */
 @media (forced-colors: active) {
   .ball-knopf, .fluss-termin, .marke.vermutet { border: 1px solid ButtonText; }
+  .sortierung .knopf[aria-pressed="true"] { border: 2px solid Highlight; }
   .ball-knopf[aria-expanded="true"] { border-color: Highlight; }
   .haken-ring { fill: Canvas; stroke: CanvasText; }
   .haken[aria-checked="true"] .haken-ring { fill: Highlight; stroke: Highlight; }
