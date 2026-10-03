@@ -2,7 +2,7 @@
  * Farben nur als Tokens; hell, dunkel (System oder Schalter) und Windows-Kontrastmodus. */
 
 :root {
-  --pult-version: "2026.10.03-8";
+  --pult-version: "2026.10.03-9";
   --grund: #f3f5f8;
   --flaeche: #ffffff;
   --flaeche-2: #f2f5f9;
@@ -402,6 +402,29 @@ a.neu-text:hover .neu-titel { text-decoration: underline; }
 }
 
 @keyframes funkeln { 0%, 100% { transform: scale(1) rotate(0); } 50% { transform: scale(1.18) rotate(12deg); } }
+
+/* ---------- Geheimnis-Wächter ---------- */
+
+.warnung { margin-bottom: 14px; padding: 16px 18px; border-color: color-mix(in srgb, var(--fehler) 45%, var(--linie)); background: color-mix(in srgb, var(--fehler) 6%, var(--flaeche)); }
+.warn-ic {
+  display: grid; place-items: center; width: 38px; height: 38px; flex: none; border-radius: 11px;
+  background: color-mix(in srgb, var(--fehler) 14%, var(--flaeche)); color: var(--fehler);
+}
+.warn-ic .ic { width: 20px; height: 20px; }
+
+.dialog {
+  width: min(520px, calc(100% - 24px)); padding: 0; border: 1px solid var(--linie); border-radius: var(--radius);
+  background: var(--flaeche); color: var(--text); box-shadow: var(--schatten-2);
+}
+.dialog::backdrop { background: rgba(10, 15, 22, 0.55); }
+.dialog-inhalt { padding: 20px 22px; display: grid; gap: 10px; }
+.dialog-inhalt p { margin: 0; }
+.dialog-kopf { display: flex; align-items: center; gap: 12px; }
+.dialog-kopf h2 { font-size: 1.1rem; }
+.dialog-ic { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 11px; background: var(--zug-hell); color: var(--zug); flex: none; }
+.dialog-ic .ic { width: 22px; height: 22px; }
+.dialog-funde { margin: 0; padding-left: 18px; }
+.dialog-knoepfe { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 6px; }
 
 /* ---------- Haken ---------- */
 

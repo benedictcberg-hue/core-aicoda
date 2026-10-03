@@ -108,6 +108,7 @@ const ICONS = {
   plus: ["M12 5v14", "M5 12h14"],
   minus: ["M5 12h14"],
   person: [{ kreis: [12, 8, 4] }, "M4 21a8 8 0 0 1 16 0"],
+  schild: ["M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z", "M12 8v4", "M12 16h.01"],
 };
 
 function icon(name, klasse) {
@@ -889,10 +890,16 @@ function rueckgaengig(id, art, ergebnis) {
   return { text: "Rückgängig", label: `${id} zurücknehmen`, tun: () => zuruecknehmen(id, art, ergebnis) };
 }
 
-function abhaken(eintrag, art) {
+async function abhaken(eintrag, art) {
   const id = eintrag.id;
   const notizSchluessel = `notiz:${id}`;
-  const notiz = art === "punkt" ? notizBereit(id) : "";
+  let notiz = art === "punkt" ? notizBereit(id) : "";
+  if (notiz) {
+    // Die Notiz landet in roadmap.json – auch die lesen alle KIs.
+    const geprueft = await geheimnisPruefen(notiz);
+    if (geprueft === null) { const f = sichtbarFinden(`notiztext:${id}`); if (f) f.focus(); return; }
+    notiz = geprueft;
+  }
   statusSchreiben({
     id, art, ziel: "x",
     betreff: (vorher) => (vorher.status === "x" ? `${id} Notiz` : `${id} erledigt`),
@@ -1012,6 +1019,7 @@ function zaehlerSetzen() {
 }
 
 function fragenZeichnen() {
+  warnungZeichnen();
   const fragen = offeneFragen();
   const fl = $("fragen-liste");
   fl.replaceChildren();
@@ -1137,6 +1145,121 @@ function zuletztZeichnen() {
             ` ${datumLesbar(punkt.erledigt)}${punkt.von ? " · " + punkt.von : ""} · ${meilenstein.id} ${meilenstein.titel}`)),
         el("div", { class: "aufgabe-rechts" }, werMarke(punkt.wer, true))))));
   box.append(aufklappen(details, "zuletzt", false));
+}
+
+/* --- Geheimnis-Wächter ---
+ * Das Forum ist anhängend und wird von KIs dreier Anbieter gelesen; Git vergisst nichts.
+ * Vor jedem Schreiben (Antwort, Beitrag, Notiz) nach Mustern suchen, die wie ein Geheimnis
+ * aussehen, und nachfragen. Ein Fund ist ein Verdacht, kein Beweis: „Trotzdem senden“ bleibt. */
+const GEHEIM_MUSTER = [
+  { name: "GitHub-Token", re: /\b(github_pat_[A-Za-z0-9_]{20,})/g },
+  { name: "GitHub-Token", re: /\b(gh[pousr]_[A-Za-z0-9]{30,})/g },
+  { name: "Anthropic-Schlüssel", re: /\b(sk-ant-[A-Za-z0-9_-]{16,})/g },
+  { name: "Google-API-Schlüssel", re: /\b(AIza[0-9A-Za-z_-]{30,})/g },
+  { name: "Server-Token", re: /\bBSVP_[A-Z_]*(?:TOKEN|KEY|PIN)\s*=\s*(\S+)/g },
+  { name: "Zugangscode", re: /\b([A-Z]{2}\d{2},\d{2})\b/g },
+  // Schlüsselwort + Wert mit Ziffer: trifft „pin ab1234“, nicht „PIN vor dem Beta-Start“
+  { name: "PIN/Passwort", re: /\b(?:pin|passwort|kennwort|password|passwd|token|geheimnis|schlüssel|key)\b[\s:=]+(?:(?:ist|lautet|is|auf)\s+)?((?=\S*\d)\S{4,})/gi },
+];
+const ERSATZ = "‹gesetzt, Wert nicht im Forum›";
+
+function geheimnisseFinden(text) {
+  const funde = [];
+  const t = String(text || "");
+  if (zustand.token && zustand.token.length >= 10 && t.includes(zustand.token)) funde.push({ name: "dein GitHub-Token", wert: zustand.token });
+  for (const { name, re } of GEHEIM_MUSTER) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(t))) {
+      const wert = m[1].replace(/[.,;:!?)»“"']+$/, "");
+      if (wert.length >= 4 && wert !== ERSATZ && !funde.some((f) => f.wert === wert)) funde.push({ name, wert });
+    }
+  }
+  return funde;
+}
+const maskiert = (wert) => wert.slice(0, 2) + "•".repeat(Math.min(8, Math.max(3, wert.length - 2)));
+function geheimnisseErsetzen(text, funde) {
+  let aus = String(text);
+  for (const f of funde) aus = aus.split(f.wert).join(ERSATZ);
+  return aus;
+}
+
+function geheimnisDialog(funde) {
+  return new Promise((fertig) => {
+    const ersetzen = el("button", { type: "submit", value: "ersetzen", class: "knopf" }, icon("schild"), "Wert ersetzen");
+    const dialog = el("dialog", { class: "dialog", "aria-labelledby": "geheim-titel" },
+      el("form", { method: "dialog", class: "dialog-inhalt" },
+        el("div", { class: "dialog-kopf" }, el("span", { class: "dialog-ic", "aria-hidden": "true" }, icon("schild")),
+          el("h2", { id: "geheim-titel", text: "Sieht nach einem Geheimnis aus" })),
+        el("ul", { class: "dialog-funde" }, funde.map((f) => el("li", {}, el("b", { text: `${f.name}: ` }), el("code", { text: maskiert(f.wert) })))),
+        el("p", { text: "Das Forum lesen KIs von drei Anbietern, und Git vergisst nichts – auch ein späterer Beitrag löscht den Wert nicht mehr." }),
+        el("p", { class: "hinweis", text: `„Wert ersetzen“ schreibt statt dessen ${ERSATZ}.` }),
+        el("div", { class: "dialog-knoepfe" },
+          el("button", { type: "submit", value: "senden", class: "knopf zweit" }, "Trotzdem senden"),
+          el("button", { type: "submit", value: "bearbeiten", class: "knopf zweit" }, icon("notiz"), "Bearbeiten"),
+          ersetzen)));
+    dialog.addEventListener("close", () => {
+      const wahl = dialog.returnValue || "bearbeiten";
+      dialog.remove();
+      fertig(wahl);
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+    ersetzen.focus();
+  });
+}
+
+/* null = nicht senden (Bearbeiten/Esc), sonst der zu schreibende Text */
+async function geheimnisPruefen(text) {
+  const funde = geheimnisseFinden(text);
+  if (!funde.length) return text;
+  const wahl = await geheimnisDialog(funde);
+  if (wahl === "senden") return text;
+  if (wahl === "ersetzen") return geheimnisseErsetzen(text, funde);
+  return null;
+}
+
+/* Altlast: was schon in eigenen Beiträgen steht. Nur maskiert zeigen; löschen kann das Pult
+ * nichts (anhängend, Git-Historie) – ehrlich bleibt nur: Wert wechseln. */
+const ALTLAST_SCHLUESSEL = "core-pult-altlast-ok";
+function altlastQuittiert() {
+  try { const a = JSON.parse(localStorage.getItem(ALTLAST_SCHLUESSEL) || "[]"); return new Set(Array.isArray(a) ? a : []); } catch (_) { return new Set(); }
+}
+function warnungZeichnen() {
+  const box = $("zug-warnung");
+  box.replaceChildren();
+  const ok = altlastQuittiert();
+  const funde = [];
+  for (const t of zustand.threads) {
+    for (const b of t.bloecke) {
+      if (b.ki !== ICH.ki || ok.has(`${t.slug}|${b.zeit}`)) continue;
+      const f = geheimnisseFinden(b.text);
+      if (f.length) funde.push({ t, b, f });
+    }
+  }
+  if (!funde.length) { box.hidden = true; return; }
+  box.hidden = false;
+  box.append(
+    el("div", { class: "neu-kopf" },
+      el("span", { class: "warn-ic", "aria-hidden": "true" }, icon("schild")),
+      el("div", { class: "neu-kopf-text" },
+        el("h2", { text: "Vermutlich ein Geheimnis im Forum" }),
+        el("p", { class: "hinweis", text: "In deinen Beiträgen steht etwas, das wie ein PIN, Passwort oder Schlüssel aussieht. KIs von drei Anbietern lesen mit; Git behält es. Löschen geht nicht – wechsle den Wert (z. B. PIN im Server-Fenster → Zugang)." })),
+      el("button", {
+        type: "button", class: "knopf zweit klein-knopf", "data-fokus": "altlast-ok",
+        onclick: () => {
+          const neu = altlastQuittiert();
+          for (const x of funde) neu.add(`${x.t.slug}|${x.b.zeit}`);
+          try { localStorage.setItem(ALTLAST_SCHLUESSEL, JSON.stringify([...neu])); } catch (_) { /* gesperrt */ }
+          warnungZeichnen();
+          melden("Gemerkt. Neue Funde erscheinen hier wieder.");
+        },
+      }, icon("haken"), "Gewechselt")),
+    el("ul", { class: "neu-liste" }, funde.map(({ t, b, f }) => el("li", {}, icon("warnung", "neu-ic"),
+      el("a", { class: "neu-text", href: `#t/${encodeURIComponent(t.slug)}` },
+        el("span", { class: "neu-titel", text: `${t.nummer} · ${t.titel}` }),
+        el("span", { class: "neu-zusatz" }, `${b.sorte} vom ${zeitLesbar(b.zeit)} · `, f.map((x) => `${x.name} ${maskiert(x.wert)}`).join(", ")))))),
+  );
 }
 
 /* --- Seit deinem letzten Besuch --- */
@@ -1437,6 +1560,9 @@ function frageKarte({ thread, block, f }) {
       text = `${bezug}\nWahl: ${v ? `Vorschlag ${v.buchstabe}: ${v.text}` : "eigene Antwort"}` + (zusatz ? `\n\n${zusatz}` : "");
       sorte = beschluss.checked ? "BESCHLUSS" : "ANTWORT";
     }
+    const geprueft = await geheimnisPruefen(text);
+    if (geprueft === null) { notiz.focus(); return; }
+    text = geprueft;
     await threadSchreiben(thread.pfad, [senden, zurueck], async () => {
       const r = await anhaengen(thread.pfad, sorte, text, `${thread.slug}: ${sorte} [${ICH.ki}/${ICH.chat}]`);
       return () => {
@@ -1966,8 +2092,10 @@ function beitragForm(t) {
     e.preventDefault();
     if (!text.value.trim()) return;
     const geschrieben = sorte.value;
+    const inhalt = await geheimnisPruefen(text.value);
+    if (inhalt === null) { text.focus(); return; }
     await threadSchreiben(t.pfad, [knopf], async () => {
-      const r = await anhaengen(t.pfad, geschrieben, text.value, `${t.slug}: ${geschrieben} [${ICH.ki}/${ICH.chat}]`);
+      const r = await anhaengen(t.pfad, geschrieben, inhalt, `${t.slug}: ${geschrieben} [${ICH.ki}/${ICH.chat}]`);
       return () => {
         entwuerfeLoeschen(schl + ":");
         threadErsetzen(t.pfad, r.text, r.sha);
@@ -2032,7 +2160,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-8";
+const FASSUNG = "2026.10.03-9";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
@@ -2123,7 +2251,7 @@ function verdrahten() {
     try {
       for (const k of Object.keys(sessionStorage)) if (k.startsWith("blob:")) sessionStorage.removeItem(k);
     } catch (_) { /* gesperrt */ }
-    for (const id of ["zug-neu", "zug-lage", "fragen-liste", "aufgaben-liste", "zuletzt-box", "roadmap-gesamt", "roadmap-fluss",
+    for (const id of ["zug-neu", "zug-warnung", "zug-lage", "fragen-liste", "aufgaben-liste", "zuletzt-box", "roadmap-gesamt", "roadmap-fluss",
       "roadmap-meilensteine", "roadmap-ready-box", "roadmap-extra", "thread-liste", "thread-detail"]) $(id).replaceChildren();
     document.title = SEITENTITEL;
     $("kopf-unter").textContent = "CORE-Forum · Roadmap 0.9.0b1 → 1.0";
