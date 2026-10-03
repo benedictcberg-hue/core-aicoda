@@ -52,6 +52,23 @@ Haken steht unten eine Meldung mit **Rückgängig**: das stellt genau die Felder
 `status`, `erledigt`, `von`, `notiz` von vorher wieder her (je ein Commit).
 Mehrere Haken schnell hintereinander werden nacheinander geschrieben.
 
+**Beschlüsse und was daraus folgt** (alles nur gerechnet, nichts davon schreibt selbst):
+
+- *Wartet auf Nachzug*: Hat ein `BESCHLUSS` einen Punkt erledigt („bekommt den Haken“)
+  oder geparkt („nach §3 verschoben“), steht er nicht mehr „bei dir“, bis die KIs
+  `roadmap.json` nachziehen. „Mit Vermerk abhaken“ setzt den Haken selbst
+  (Notiz `laut BESCHLUSS 055 (…): …`), „Gehört doch zu mir“ holt ihn zurück,
+  „KIs anstoßen“ legt einen `BEFUND`-Entwurf im Roadmap-Thread an (abgeschickt wird
+  nur über „Anhängen“, mit Wächter und Atempause).
+- *Wer ist am Zug*: zwei Knöpfe in der Lage, „Bei dir“ (Fragen, Punkte, Zusagen,
+  Anträge) und „Bei den KIs“ (Nachzüge, Aufträge an „eine KI“).
+- *Zusagen* („ich … melde das Ergebnis“) mit Frist und „Ergebnis melden“ (Vorlage im
+  Beitragsfeld), *Anträge ohne Antwort* unter den Fragen, *Termine* aus Beschlüssen
+  in der Lage und am Meilenstein im Flussdiagramm.
+
+Zugeordnet wird über die Zeile `Roadmap: M2 · B-8 · R1` der FRAGE: `B-8` trifft den
+Punkt mit dieser Kennung, `Anhang B 8` ist eine eigene Klasse.
+
 Abhängigkeiten im Flussdiagramm: trägt ein Meilenstein in `roadmap.json` ein
 Feld `"nach": ["M1", …]`, gelten diese Felder. Sonst zeichnet die Seite den
 Stand aus dem Diagramm „Kritischer Pfad“ im Forum-README (M0 → M1 → M2/M3/M4/M6,

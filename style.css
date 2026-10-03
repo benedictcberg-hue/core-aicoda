@@ -2,7 +2,7 @@
  * Farben nur als Tokens; hell, dunkel (System oder Schalter) und Windows-Kontrastmodus. */
 
 :root {
-  --pult-version: "2026.10.03-15";
+  --pult-version: "2026.10.03-19";
   --grund: #f3f5f8;
   --flaeche: #ffffff;
   --flaeche-2: #f2f5f9;
@@ -367,6 +367,75 @@ details[open] > summary .chevron { transform: rotate(180deg); }
 .lage-zeile { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .lage-pfad { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 0; color: var(--text-leise); font-size: 0.86rem; }
 .lage-pfad .ic { margin-top: 0.2em; vertical-align: 0; }
+
+/* Wer ist am Zug: zwei Knöpfe, Breite nach Anzahl (flex-grow per CSSOM) */
+.lage .lage-text { flex: 1; }
+.ball { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.ball-knopf {
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 10px; flex-basis: 0; min-width: 8.5em;
+  min-height: 44px; padding: 6px 14px; border-radius: 12px; border: 1px solid transparent;
+  font: inherit; font-weight: 650; cursor: pointer; text-align: left; transition: box-shadow 0.15s, border-color 0.15s;
+}
+.ball-knopf.dir { background: var(--zug-hell); color: var(--zug); border-color: color-mix(in srgb, var(--zug) 30%, transparent); }
+.ball-knopf.kis { background: var(--akzent-hell); color: var(--akzent); border-color: color-mix(in srgb, var(--akzent) 30%, transparent); }
+.ball-knopf:hover { box-shadow: var(--schatten-1); }
+.ball-knopf[aria-expanded="true"] { border-color: currentColor; box-shadow: inset 0 0 0 1px currentColor; }
+.ball-zahl { font-size: 1.25rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.ball-liste {
+  list-style: none; margin: 10px 0 0; padding: 6px 0; border-radius: 12px;
+  background: var(--flaeche); box-shadow: inset 0 0 0 1px var(--linie);
+}
+.ball-liste > li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 7px 12px; font-size: 0.9rem; }
+.ball-liste > li + li { border-top: 1px solid var(--linie); }
+.ball-liste > li > .ic { color: var(--text-leise); flex: none; }
+.ball-liste a, .ball-link { flex: 1; min-width: 0; color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
+.ball-liste a:hover, .ball-link:hover { color: var(--akzent); text-decoration: underline; }
+.ball-link { padding: 0; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
+.ball-liste .knopf { margin-left: auto; }
+.ball-liste > li > span { flex: 1 1 12em; min-width: 0; }
+
+/* Termin, Zusage, Hebel: feste Rollen unter der Lage */
+.lage-hinweise { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.lage-hinweise > li { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 10px; font-size: 0.92rem; }
+.lage-hinweise > li > .ic { color: var(--zug); margin-top: 0.2em; flex: none; }
+.lage-hinweise > li > span { flex: 1 1 14em; min-width: 0; }
+.lage-hinweise .knopf { min-height: 44px; }
+.termin-rel { color: var(--zug); font-weight: 700; }
+.termin-vor { display: block; margin-top: 2px; color: var(--text-leise); font-size: 0.84rem; }
+.fluss-termin {
+  display: inline-flex; align-items: center; gap: 4px; align-self: flex-start;
+  padding: 0 7px; border-radius: 99px; background: var(--zug-hell); color: var(--zug);
+  font-size: 0.72rem; font-weight: 700; white-space: nowrap;
+}
+.fluss-termin .ic { width: 1em; height: 1em; }
+
+/* Wartet auf Nachzug */
+.nachzug { margin-top: 14px; padding: 0; overflow: hidden; }
+.nachzug > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 12px 18px; }
+.nachzug > summary .chevron { margin-left: auto; }
+.nachzug-ic { color: var(--zug); }
+.nachzug-name { font-weight: 650; }
+.nachzug-satz { color: var(--text-leise); font-size: 0.86rem; }
+.nachzug[open] > summary { border-bottom: 1px solid var(--linie); }
+.nachzug-kopf { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 18px; background: var(--flaeche-2); }
+.nachzug-kopf .hinweis { flex: 1; min-width: 14em; margin: 0; }
+.nachzug-zeile { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; align-items: start; padding: 12px 18px; border-top: 1px solid var(--linie); }
+.nachzug-haupt { min-width: 0; }
+.nachzug-weil { margin: 4px 0 0; color: var(--text-leise); font-size: 0.86rem; overflow-wrap: anywhere; }
+.nachzug-aktionen { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.nachzug-park { margin: 0; max-width: 16em; }
+.beschluss-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--akzent); font-size: 0.86rem; text-decoration: none; }
+.beschluss-link:hover { text-decoration: underline; }
+.marke.vermutet { margin-left: 6px; border: 1px dashed var(--linie-stark); box-shadow: none; }
+
+/* Anträge ohne Antwort */
+.antraege h3 { display: flex; align-items: center; gap: 8px; margin: 6px 0 8px; font-size: 1rem; }
+.antraege-liste { list-style: none; margin: 0; padding: 0; overflow: hidden; }
+.antrag { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 12px 18px; }
+.antrag + .antrag { border-top: 1px solid var(--linie); }
+.antrag-haupt { flex: 1; min-width: 14em; }
+.antrag-kopf { color: var(--text-leise); font-size: 0.86rem; }
+.antrag-zitat { margin: 4px 0 0; font-weight: 600; overflow-wrap: anywhere; }
 
 /* ---------- Seit deinem letzten Besuch ---------- */
 
@@ -975,6 +1044,19 @@ mark { background: var(--teil-hell); color: inherit; border-radius: 3px; padding
   .meldung { bottom: 12px; }
 }
 
+@media (max-width: 640px) {
+  .nachzug-zeile { grid-template-columns: minmax(0, 1fr); padding: 12px 14px; }
+  .nachzug-aktionen { flex-direction: row; flex-wrap: wrap; }
+  .nachzug-aktionen .knopf, .nachzug-kopf .knopf { min-height: 44px; }
+  .nachzug > summary, .nachzug-kopf { padding-left: 14px; padding-right: 14px; }
+  /* Lage am Handy: Ring neben Ziel und Titel, alles Weitere volle Breite */
+  .lage { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 14px; align-items: center; }
+  .lage > .lage-text { display: contents; }
+  .lage > .ring-box { grid-row: 1 / span 2; }
+  .lage .lage-ziel, .lage .lage-titel { grid-column: 2; }
+  .lage .lage-zeile, .lage .ball, .lage .ball-liste, .lage .lage-hinweise, .lage .lage-pfad { grid-column: 1 / -1; }
+}
+
 @media (max-width: 420px) {
   .kopf-unter { display: none; }
   .reiter a { padding: 8px 8px 9px; }
@@ -1044,6 +1126,8 @@ mark { background: var(--teil-hell); color: inherit; border-radius: 3px; padding
 
 /* Windows-Kontrastmodus: Systemfarben, damit Haken und Balken sichtbar bleiben */
 @media (forced-colors: active) {
+  .ball-knopf, .fluss-termin, .marke.vermutet { border: 1px solid ButtonText; }
+  .ball-knopf[aria-expanded="true"] { border-color: Highlight; }
   .haken-ring { fill: Canvas; stroke: CanvasText; }
   .haken[aria-checked="true"] .haken-ring { fill: Highlight; stroke: Highlight; }
   .haken[aria-checked="true"] .haken-strich { stroke: HighlightText; }

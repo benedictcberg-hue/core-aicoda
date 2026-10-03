@@ -942,16 +942,18 @@ function rueckgaengig(id, art, ergebnis) {
   return { text: "Rückgängig", label: `${id} zurücknehmen`, tun: () => zuruecknehmen(id, art, ergebnis) };
 }
 
-async function abhaken(eintrag, art) {
+/* vorgabe: Vermerk, der vor eine getippte Notiz kommt („laut BESCHLUSS 055 …“). */
+async function abhaken(eintrag, art, vorgabe) {
   const id = eintrag.id;
   const notizSchluessel = `notiz:${id}`;
-  let notiz = art === "punkt" ? notizBereit(id) : "";
-  if (notiz) {
+  let getippt = art === "punkt" ? notizBereit(id) : "";
+  if (getippt) {
     // Die Notiz landet in roadmap.json – auch die lesen alle KIs.
     const feld = sichtbarFinden(`notiztext:${id}`);
     if (feld && (await pruefeVorSenden([{ el: feld, entwurf: notizSchluessel }], sichtbarFinden(`haken:${id}`))) !== "senden") return;
-    notiz = notizBereit(id);
+    getippt = notizBereit(id);
   }
+  const notiz = [vorgabe, getippt].filter(Boolean).join(" · ");
   statusSchreiben({
     id, art, ziel: "x",
     betreff: (vorher) => (vorher.status === "x" ? `${id} Notiz` : `${id} erledigt`),
@@ -970,7 +972,7 @@ async function abhaken(eintrag, art) {
     },
     erfolg: (ergebnis) => {
       if (!ergebnis.geaendert) { melden(`${id} war schon erledigt.`, { fokus: `haken:${id}` }); return; }
-      if (notiz) { entwurfSetzen(notizSchluessel, ""); zustand.offen.delete(`notizfeld:${id}`); roadmapTeileZeichnen(); }
+      if (getippt) { entwurfSetzen(notizSchluessel, ""); zustand.offen.delete(`notizfeld:${id}`); roadmapTeileZeichnen(); }
       const text = ergebnis.vorher.status === "x" ? `${id} war schon erledigt – Notiz ergänzt.` : `${id} abgehakt.`;
       melden(text, { aktion: rueckgaengig(id, art, ergebnis), fokus: `haken:${id}` });
     },
@@ -1045,12 +1047,532 @@ function hakenKnopf(eintrag, art, klein) {
   return knopf;
 }
 
+/* --- Beschlüsse und was daraus folgt: Nachzug, Aufträge, Zusagen, Termine ---
+ * Ein Beschluss ändert roadmap.json nicht selbst, das ziehen die KIs nach (AGENT.md). Bis dahin
+ * stünden Punkte „bei dir“, über die längst entschieden ist. Hier wird nur gerechnet und
+ * gezeigt; geschrieben wird über die vorhandenen Wege, und alles, was KIs anstoßen soll, ist
+ * ein Entwurf, den der Betreiber selbst absendet. */
+
+const NACHZUG_ZURUECK = `core-pult-nachzug-zurueck:${ZWEIG}`;
+const WOCHENTAG = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
+const WOCHENTAG_LANG = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
+const MONAT = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
+const TAG_MS = 86400000;
+
+/* „B-8“ → B8, „V-17“ → V17; „Anhang B 9“ und „Anh.B 9“ → ANHB9, eine eigene Klasse (nie B9). */
+function kennungNorm(s) {
+  return String(s).trim().replace(/^Anh(?:ang|\.)?\s*B\s*/i, "ANHB").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+const TITEL_KENNUNG = /^(Anhang B \d+|[A-Z]{1,2}-?\d+)(?=[\s:,(]|$)/;
+/* Kennungen eines Punkts: aus dem Titelanfang und der ID ohne „M4-“. Anhang B steht für sich. */
+function punktSchluessel(p) {
+  const m = TITEL_KENNUNG.exec(String(p.titel || ""));
+  const ausTitel = m ? kennungNorm(m[1]) : "";
+  if (ausTitel.startsWith("ANHB")) return new Set([ausTitel]);
+  const aus = new Set();
+  if (ausTitel) aus.add(ausTitel);
+  const rest = kennungNorm(String(p.id || "").replace(/^M\d+-/, ""));
+  if (rest) aus.add(rest);
+  return aus;
+}
+/* „Roadmap: M2 · B-8 · R1“ einer FRAGE → [{punkt, ms, weil, vermutet}] */
+function punkteZuTokens(tokens, rm, frageText, slug) {
+  const ms = ((rm && rm.meilensteine) || []).filter((m) => m && Array.isArray(m.punkte));
+  const aus = [];
+  const dazu = (punkt, m, weil, vermutet) => {
+    if (!aus.some((a) => a.punkt === punkt)) aus.push({ punkt, ms: m, weil, vermutet: !!vermutet });
+  };
+  for (const m of ms) for (const p of m.punkte) if (slug && p.frage === slug) dazu(p, m, `frage ${slug}`, false);
+  const mIds = tokens.filter((t) => /^M\d+$/.test(t));
+  const kennungen = tokens.filter((t) => !/^[MR]\d+$/.test(t)).map((t) => [t, kennungNorm(t)]).filter(([, k]) => k.length >= 2);
+  for (const m of mIds.length ? ms.filter((x) => mIds.includes(x.id)) : ms) {
+    for (const p of m.punkte) {
+      const schluessel = punktSchluessel(p);
+      const k = kennungen.find(([, n]) => schluessel.has(n));
+      if (k) dazu(p, m, k[0], false);
+    }
+  }
+  // Nur ein Meilenstein genannt: sein einziger offener Punkt, wenn die Frage ihn beim Namen nennt.
+  for (const m of ms.filter((x) => mIds.includes(x.id))) {
+    if (aus.some((a) => a.ms === m)) continue;
+    const offen = m.punkte.filter((p) => p.status !== "x");
+    if (offen.length !== 1) continue;
+    const wort = (/[A-Za-zÄÖÜäöüß]{6,}/.exec(String(offen[0].titel || "")) || [])[0];
+    if (wort && String(frageText || "").toLowerCase().includes(wort.toLowerCase())) dazu(offen[0], m, wort, true);
+  }
+  return aus;
+}
+
+/* --- Datum: Tage zählen in Ortszeit --- */
+const tagVon = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+function tagAus(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || "");
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+const zweistellig = (n) => String(n).padStart(2, "0");
+const isoVon = (d) => `${d.getFullYear()}-${zweistellig(d.getMonth() + 1)}-${zweistellig(d.getDate())}`;
+function zeitPunkt(iso) {
+  const s = String(iso || "");
+  const d = new Date(/T\d{2}:\d{2}Z$/.test(s) ? s.replace(/Z$/, ":00Z") : s);
+  return isNaN(d) ? null : d;
+}
+const tageBis = (d) => Math.round((tagVon(d) - tagVon(new Date())) / TAG_MS);
+const kurzDatum = (d) => `${WOCHENTAG[d.getDay()]} ${zweistellig(d.getDate())}.${zweistellig(d.getMonth() + 1)}.`;
+const langDatum = (d) => `${WOCHENTAG_LANG[d.getDay()]}, ${d.getDate()}. ${MONAT[d.getMonth()]}`;
+function relativ(tage) {
+  if (tage === 0) return "heute";
+  if (tage === 1) return "morgen";
+  if (tage > 1) return `in ${tage} Tagen`;
+  return `seit ${-tage} ${tage === -1 ? "Tag" : "Tagen"} überfällig`;
+}
+function seitDauer(d) {
+  if (!d) return "";
+  const min = Math.max(0, Math.round((Date.now() - d) / 60000));
+  if (min < 60) return `seit ${min} Min.`;
+  const std = Math.round(min / 60);
+  return std < 48 ? `seit ${std} Std.` : `seit ${Math.round(std / 24)} Tagen`;
+}
+/* „5.10.26“ oder „05.10.2026“ → 2026-10-05; ungültige Daten zählen nicht. */
+function datumImText(text) {
+  const m = /(^|[^\d.])(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})(?![\d.])/.exec(String(text || ""));
+  if (!m) return "";
+  const jahr = m[4].length === 2 ? 2000 + Number(m[4]) : Number(m[4]);
+  const d = new Date(jahr, Number(m[3]) - 1, Number(m[2]));
+  if (d.getFullYear() !== jahr || d.getMonth() !== Number(m[3]) - 1 || d.getDate() !== Number(m[2])) return "";
+  return isoVon(d);
+}
+
+/* --- Text --- */
+function kuerzen(text, max) {
+  const s = String(text || "").replace(/\s+/g, " ").trim();
+  if (s.length <= max) return s;
+  const schnitt = s.slice(0, max);
+  const i = schnitt.lastIndexOf(" ");
+  return `${(i > max * 0.6 ? schnitt.slice(0, i) : schnitt).replace(/[\s,;:.–-]+$/, "")} …`;
+}
+/* Sätze enden an . ! ? vor einem Leerzeichen; „vergleich.cmd“ bleibt ganz. */
+function saetze(text) {
+  const s = String(text || "").replace(/\s+/g, " ").trim();
+  const aus = [];
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (".!?".includes(s[i]) && (i + 1 === s.length || s[i + 1] === " ")) { aus.push(s.slice(start, i + 1).trim()); start = i + 1; }
+  }
+  if (s.slice(start).trim()) aus.push(s.slice(start).trim());
+  return aus;
+}
+const zitatAus = (text) => ((/„([^“”"]+)[“”"]/.exec(String(text || "")) || [])[1] || "").trim();
+
+/* --- Paare aus FRAGE und Antwort des Betreibers --- */
+function antwortZerlegen(b) {
+  const zeilen = String(b.text).split("\n");
+  const w = WAHL.exec(zeilen[1] || "");
+  const angaben = {};
+  const rest = [];
+  for (const z of zeilen.slice(w ? 2 : 1)) {
+    const a = /^(Pfad|Termin|Anzahl|Angabe): (.+)$/.exec(z);
+    if (a) angaben[a[1]] = a[2].trim();
+    else if (!z.startsWith("Nachtrag:")) rest.push(z);
+  }
+  const zusatz = rest.join("\n").trim();
+  if (!w) return { wahl: "", wahlText: "", angaben, zusatz };
+  if (w[1]) return { wahl: w[1], wahlText: w[2].trim(), angaben, zusatz };
+  return { wahl: "eigen", wahlText: zusatz, angaben, zusatz: "" };
+}
+/* Wofür steht der Beschluss? Der erste Treffer zählt. */
+function klasseVon(wahlText, zusatz) {
+  const text = `${wahlText}\n${zusatz}`;
+  if (/^\s*Wenn\b/i.test(wahlText)) return "regel";
+  if (/verschoben|nach §\s?3|\bparken\b|\bgeparkt\b|nach (der )?Beta\b|nach 1\.0|\bspäter\b/i.test(text)) return "geparkt";
+  if (/\bHaken\b|\berfüllt\b|als erledigt/i.test(text)) return "erledigt";
+  return "beschluss";
+}
+function faedenBauen(threads, rm) {
+  const paare = [];
+  for (const t of threads) {
+    const jeFrage = new Map();
+    for (const [b, frage] of antwortenZuordnen(t).frageVon) {
+      if (!frage || (b.sorte !== "ANTWORT" && b.sorte !== "BESCHLUSS")) continue;
+      if (!jeFrage.has(frage)) jeFrage.set(frage, []);
+      jeFrage.get(frage).push(b);
+    }
+    for (const [frage, antworten] of jeFrage) {
+      const teile = antworten.map((b) => ({ b, ...antwortZerlegen(b) }));
+      // Gilt die letzte Wahl; ein Nachtrag ohne Wahl ergänzt nur die Angaben.
+      const haupt = [...teile].reverse().find((x) => x.wahl) || teile[teile.length - 1];
+      const angaben = Object.assign({}, ...teile.map((x) => x.angaben));
+      const zusatz = teile.map((x) => x.zusatz).filter(Boolean).join("\n");
+      const text = `${haupt.wahlText}\n${zusatz}`;
+      const f = frageParsen(frage);
+      const klasse = klasseVon(haupt.wahlText, zusatz);
+      const termin = /^\d{4}-\d{2}-\d{2}$/.test(angaben.Termin || "") ? angaben.Termin
+        : datumImText(haupt.wahl === "eigen" ? text : zusatz);
+      const danach = t.bloecke.slice(t.bloecke.indexOf(haupt.b) + 1);
+      paare.push({
+        thread: t, frage, antwort: haupt.b, f,
+        wahl: haupt.wahl, wahlText: haupt.wahlText, empfohlen: f.empfohlen, zusatz, angaben,
+        punkte: punkteZuTokens(f.roadmap, rm, f.frage, t.slug),
+        mTokens: f.roadmap.filter((x) => /^M\d+$/.test(x)),
+        rTokens: f.roadmap.filter((x) => /^R\d+$/.test(x)),
+        klasse,
+        kiAuftrag: klasse !== "regel" && /\beine KI\b/i.test(text),
+        zusage: /\bich\b[^.]*\bmelde\b|Ergebnis hier melden/i.test(text),
+        termin,
+        kiDanach: danach.some((x) => x.ki !== ICH.ki),
+        betreiberDanach: danach.some((x) => x.ki === ICH.ki),
+      });
+    }
+  }
+  return paare.sort((a, b) => a.antwort.zeit.localeCompare(b.antwort.zeit) || a.thread.slug.localeCompare(b.thread.slug));
+}
+
+function nachzugZurueckLesen() {
+  try {
+    const w = JSON.parse(localStorage.getItem(NACHZUG_ZURUECK) || "[]");
+    return Array.isArray(w) ? w.filter((x) => typeof x === "string") : [];
+  } catch (_) { return []; }
+}
+function nachzugZurueckSchreiben(ids) {
+  try {
+    if (ids.length) localStorage.setItem(NACHZUG_ZURUECK, JSON.stringify(ids)); else localStorage.removeItem(NACHZUG_ZURUECK);
+  } catch (_) { /* gesperrt: gilt bis zum Neuladen nicht */ }
+}
+
+/* Einmal je Stand gerechnet: Threads (sha), roadmap.json (Objekt) und die „gehört doch zu mir“-Liste. */
+let beschlussMemo = null;
+function beschluesse() {
+  const rm = zustand.roadmap;
+  const zurueck = nachzugZurueckLesen();
+  const schluessel = `${zustand.threads.map((t) => t.sha).join(",")}|${zurueck.join(",")}`;
+  if (beschlussMemo && beschlussMemo.rm === rm && beschlussMemo.schluessel === schluessel) return beschlussMemo;
+  const paare = faedenBauen(zustand.threads, rm);
+  const ausgenommen = new Set(zurueck);
+  const nachzug = new Map();
+  for (const paar of paare) {
+    if (paar.klasse !== "erledigt" && paar.klasse !== "geparkt") continue;
+    for (const treffer of paar.punkte) {
+      const p = treffer.punkt;
+      if (p.status === "x" || !istMeins(p) || ausgenommen.has(p.id) || nachzug.has(p.id)) continue;
+      nachzug.set(p.id, { paar, treffer });
+    }
+  }
+  beschlussMemo = { rm, schluessel, paare, nachzug };
+  return beschlussMemo;
+}
+const istBeiDir = (p) => istMeins(p) && p.status !== "x" && !beschluesse().nachzug.has(p.id);
+
+/* Zusagen des Betreibers („ich … melde“): offen, bis er im Thread wieder schreibt. */
+function zusagenOffen() {
+  const rm = zustand.roadmap;
+  return beschluesse().paare.filter((p) => p.zusage && !p.betreiberDanach).map((paar) => {
+    const text = `${paar.wahlText}\n${paar.zusatz}`;
+    const beschluss = zeitPunkt(paar.antwort.zeit);
+    let frist = null;
+    if (beschluss && /diese Woche/i.test(text)) {
+      frist = tagVon(beschluss);
+      frist.setDate(frist.getDate() + ((7 - frist.getDay()) % 7));
+    } else if (beschluss && /\bmorgen\b/i.test(text)) {
+      frist = tagVon(beschluss);
+      frist.setDate(frist.getDate() + 1);
+    }
+    // Ist der Handlauf schon abgehakt, fehlt nur noch das Ergebnis im Thread.
+    const seit = beschluss ? isoVon(tagVon(beschluss)) : "";
+    const kandidaten = paar.punkte.length ? paar.punkte.map((t) => t.punkt)
+      : ((rm && rm.meilensteine) || []).filter((m) => paar.mTokens.includes(m.id)).flatMap((m) => m.punkte || []);
+    const abgehakt = kandidaten.find((p) => p.wer === "betrieb" && p.status === "x" && String(p.erledigt || "") >= seit) || null;
+    return { paar, frist, abgehakt };
+  });
+}
+/* Aufträge an „eine KI“: erledigt, sobald nach dem Beschluss eine KI im Thread schreibt. */
+function auftraegeOffen() {
+  return beschluesse().paare.filter((p) => p.kiAuftrag && !p.kiDanach).map((paar) => {
+    const treffer = paar.punkte.find((t) => t.punkt.wer === "code" && t.punkt.status !== "x");
+    return { paar, punkt: treffer ? treffer.punkt : null, satz: saetze(paar.wahlText).find((s) => /\beine KI\b/i.test(s)) || kuerzen(paar.wahlText, 120) };
+  });
+}
+/* Threads, deren letztes Wort ein ANTRAG oder EINWAND einer KI ist. */
+function antraegeOhneAntwort() {
+  return zustand.threads
+    .filter((t) => !t.geschlossen && t.letzter && (t.letzter.sorte === "ANTRAG" || t.letzter.sorte === "EINWAND") && t.letzter.ki !== ICH.ki)
+    .map((t) => {
+      const s = saetze(t.letzter.text);
+      return { thread: t, block: t.letzter, zitat: kuerzen(s.filter((x) => x.includes("?")).pop() || s[0] || "", 120) };
+    })
+    .sort((a, b) => b.block.zeit.localeCompare(a.block.zeit));
+}
+/* Termine aus Beschlüssen: kommend oder höchstens 14 Tage überfällig, der nächste zuerst. */
+function termineAktiv() {
+  return beschluesse().paare.filter((p) => p.termin).map((paar) => {
+    const tag = tagAus(paar.termin);
+    return { paar, tag, tage: tageBis(tag), ms: paar.mTokens[0] || "" };
+  }).filter((x) => x.tage >= -14).sort((a, b) => a.tag - b.tag);
+}
+function terminEtikett(x) {
+  const ready = (zustand.roadmap && zustand.roadmap.ready) || [];
+  const r = x.paar.rTokens.map((id) => ready.find((q) => q.id === id)).find(Boolean);
+  if (r && r.titel) return r.titel;
+  if (x.paar.punkte.length) return x.paar.punkte[0].punkt.titel;
+  return x.paar.thread.titel.split(" (")[0].split("?")[0].trim();
+}
+/* Alle Meilensteine, auf die id (über Kanten) wartet; ein Kreis hält nicht an. */
+function vorfahrenVon(g, id) {
+  const aus = new Set();
+  const stapel = [id];
+  while (stapel.length) {
+    const x = stapel.pop();
+    for (const k of g.kanten) if (k.nach === x && !aus.has(k.von)) { aus.add(k.von); stapel.push(k.von); }
+  }
+  aus.delete(id);
+  return aus;
+}
+
+/* --- Aktionen: Haken mit Vermerk, „gehört doch zu mir“, Entwürfe vorbereiten --- */
+function vermerkFuer(paar) {
+  return `laut ${paar.antwort.sorte} ${paar.thread.nummer} (${datumLesbar(paar.antwort.zeit)}): ${zitatAus(paar.wahlText) || "erledigt per Beschluss"}`;
+}
+function nachzugWas(paar) {
+  if (paar.klasse === "erledigt") {
+    const z = zitatAus(paar.wahlText);
+    return z ? `Haken mit Vermerk „${z}“` : "Haken per Beschluss";
+  }
+  return /§\s?3/.test(`${paar.wahlText}\n${paar.zusatz}`) ? "nach §3 verschoben" : `geparkt („${kuerzen(paar.wahlText, 80)}“)`;
+}
+function nachzugZurueckNehmen(id) {
+  const ids = nachzugZurueckLesen();
+  if (!ids.includes(id)) nachzugZurueckSchreiben([...ids, id]);
+  roadmapTeileZeichnen(`haken:${id}`);
+  melden(`${id} steht wieder bei dir.`, {
+    fokus: `haken:${id}`,
+    aktion: {
+      text: "Rückgängig", label: `${id} wieder als Nachzug führen`,
+      tun: () => {
+        nachzugZurueckSchreiben(nachzugZurueckLesen().filter((x) => x !== id));
+        roadmapTeileZeichnen();
+        melden(`${id} wartet wieder auf Nachzug.`);
+      },
+    },
+  });
+}
+/* Thread öffnen und den Fokus ins Feld setzen, sobald die Ansicht steht. */
+function zuEntwurf(t, fokus) {
+  const ziel = `#t/${encodeURIComponent(t.slug)}`;
+  const danach = () => {
+    const f = sichtbarFinden(fokus);
+    if (!f) return;
+    f.focus({ preventScroll: true });
+    f.scrollIntoView({ block: "center", behavior: bewegungAus() ? "auto" : "smooth" });
+    if (typeof f.setSelectionRange === "function") {
+      const n = f.value.length;
+      try { f.setSelectionRange(n, n); } catch (_) { /* Feldart ohne Auswahl */ }
+    }
+  };
+  if (location.hash === ziel) { route(); danach(); return; }
+  window.addEventListener("hashchange", () => setTimeout(danach, 0), { once: true });
+  location.hash = ziel;
+}
+/* Beitrags-Entwurf ergänzen, ohne schon Vorhandenes zu verdoppeln. Gesendet wird nur über „Anhängen“. */
+function entwurfVorbereiten(t, sorte, text) {
+  const schl = `beitrag:${t.slug}`;
+  entwurfSetzen(`${schl}:sorte`, sorte);
+  const alt = entwurf(`${schl}:text`);
+  const zeilen = text.split("\n");
+  if (!alt.trim()) entwurfSetzen(`${schl}:text`, text);
+  else if (!alt.includes(zeilen[0])) entwurfSetzen(`${schl}:text`, `${alt.trimEnd()}\n\n${text}`);
+  else {
+    const fehlen = zeilen.filter((z) => z.trim() && !alt.includes(z));
+    if (fehlen.length) entwurfSetzen(`${schl}:text`, `${alt.trimEnd()}\n${fehlen.join("\n")}`);
+  }
+  zuEntwurf(t, `${schl}:text`);
+}
+function anstossZiel() {
+  const rm = zustand.roadmap;
+  const nr = (/Thread (\d{3})/.exec((rm && rm.quelle) || "") || [])[1] || "031";
+  return zustand.threads.find((t) => t.nummer === nr) || null;
+}
+function kisAnstossen(ziel) {
+  const rm = zustand.roadmap;
+  const gruppen = new Map();
+  for (const [id, { paar }] of beschluesse().nachzug) {
+    if (!gruppen.has(paar)) gruppen.set(paar, []);
+    gruppen.get(paar).push(id);
+  }
+  const zeilen = [`Nachzug fehlt in roadmap.json (Stand ${(rm && rm.stand) || "?"}):`];
+  for (const [paar, ids] of gruppen) zeilen.push(`- ${ids.join(", ")} laut ${paar.antwort.sorte} ${paar.thread.nummer} (${datumLesbar(paar.antwort.zeit)}): ${nachzugWas(paar)}`);
+  zeilen.push("Bitte roadmap.json nachziehen (AGENT.md).");
+  entwurfVorbereiten(ziel, "BEFUND", zeilen.join("\n"));
+  melden(`Entwurf in ${ziel.nummer} vorbereitet – prüfen und anhängen.`);
+}
+function ergebnisMelden(t) {
+  const schl = `beitrag:${t.slug}`;
+  const vorlage = entwurf(`${schl}:text`).trim() ? "" : `Ergebnis: …\nDatum: ${datumLesbar(heute())}\nProtokoll: …`;
+  entwurfVorbereiten(t, "BEFUND", vorlage || entwurf(`${schl}:text`));
+}
+
+/* --- Zeichnen --- */
+function beschlussVerweis(paar) {
+  const wort = paar.antwort.sorte === "BESCHLUSS" ? "Beschluss" : "Antwort";
+  return el("a", { class: "beschluss-link", href: ankerLink(paar.thread, paar.antwort) }, icon("threads"),
+    `${wort} ${paar.thread.nummer} · ${zeitLesbar(paar.antwort.zeit)} · ${paar.wahl === "eigen" ? "eigene Antwort" : `Wahl ${paar.wahl}`}`);
+}
+function nachzugZeichnen() {
+  const box = $("nachzug-box");
+  box.replaceChildren();
+  if (!zustand.roadmap) return;
+  const { nachzug } = beschluesse();
+  if (!nachzug.size) return;
+  const ziel = anstossZiel();
+  let anstoss = null;
+  if (ziel) {
+    const juengster = [...nachzug.values()].reduce((z, { paar }) => (paar.antwort.zeit > z ? paar.antwort.zeit : z), "");
+    const schon = [...ziel.bloecke].reverse().find((b) => b.ki === ICH.ki && b.sorte === "BEFUND" && b.text.startsWith("Nachzug fehlt") && b.zeit > juengster);
+    anstoss = schon
+      ? el("a", { class: "knopf zweit klein-knopf", href: ankerLink(ziel, schon) }, icon("ok"), `Schon angestoßen (${datumLesbar(schon.zeit).slice(0, 6)})`)
+      : el("button", { type: "button", class: "knopf zweit klein-knopf", "data-fokus": "nachzug:anstossen", onclick: () => kisAnstossen(ziel) },
+        icon("senden"), "KIs anstoßen");
+  }
+  const zeilen = [...nachzug.entries()].map(([id, { paar, treffer }]) => {
+    const p = treffer.punkt;
+    const laeuft = zustand.laufend.has(id);
+    return el("li", { class: "nachzug-zeile", "data-zeile": `nachzug:${id}` },
+      el("div", { class: "nachzug-haupt" },
+        el("div", { class: "aufgabe-titel" }, el("span", { class: "kennung", text: id }), " ", p.titel,
+          treffer.vermutet ? el("span", { class: "marke leise vermutet", title: `vermutet: über „${treffer.weil}“` }, "vermutet") : null),
+        beschlussVerweis(paar),
+        el("p", { class: "nachzug-weil", text: `weil ${paar.thread.nummer} sagt: „${kuerzen(paar.wahlText, 140)}“` })),
+      el("div", { class: "nachzug-aktionen" },
+        paar.klasse === "erledigt"
+          ? el("button", {
+            type: "button", class: "knopf klein-knopf", "data-fokus": `vermerk:${id}`, disabled: laeuft, "aria-busy": laeuft ? "true" : null,
+            title: vermerkFuer(paar), onclick: () => abhaken(p, "punkt", vermerkFuer(paar)),
+          }, icon("haken"), "Mit Vermerk abhaken")
+          : el("span", { class: "hinweis nachzug-park", text: "Umsortieren ist Sache der KI (nach §3)." }),
+        el("button", { type: "button", class: "knopf zweit klein-knopf", "data-fokus": `meins:${id}`, onclick: () => nachzugZurueckNehmen(id) },
+          icon("person"), "Gehört doch zu mir")));
+  });
+  const details = el("details", { class: "karte nachzug" },
+    el("summary", {},
+      icon("uhr", "nachzug-ic"),
+      el("span", { class: "nachzug-name" }, "Wartet auf Nachzug ", el("span", { class: "zaehler leise", text: String(nachzug.size) })),
+      el("span", { class: "nachzug-satz", text: "Du hast entschieden, roadmap.json zeigt es noch nicht." }),
+      icon("runter", "chevron")),
+    el("div", { class: "nachzug-kopf" },
+      el("p", { class: "hinweis", text: `Die KIs ziehen roadmap.json nach (AGENT.md).${ziel ? ` Ein BEFUND in ${ziel.nummer} erinnert sie daran.` : ""}` }),
+      anstoss),
+    el("ul", { class: "checkliste nachzug-liste" }, zeilen));
+  box.append(aufklappen(details, "nachzug", false));
+}
+
+function springenZu(schluessel) {
+  const z = sichtbarFinden(schluessel);
+  if (!z) return;
+  z.scrollIntoView({ block: "center", behavior: bewegungAus() ? "auto" : "smooth" });
+  z.focus({ preventScroll: true });
+}
+/* Wer ist am Zug? Zwei Knöpfe, ein Klick klappt die Liste darunter auf. */
+function ballZeichnen(aufgaben) {
+  const offen = zustand.offen.get("ball") || "";
+  const dir = [];
+  for (const q of offeneFragen()) {
+    dir.push(el("li", {}, icon("rueckfrage"),
+      el("a", { href: ankerLink(q.thread, q.block) }, el("span", { class: "kennung", text: q.thread.nummer }), ` Frage: ${kuerzen(q.f.frage, 90)}`)));
+  }
+  for (const { punkt } of aufgaben) {
+    dir.push(el("li", {}, icon(Object.prototype.hasOwnProperty.call(WER_ICON, punkt.wer) ? WER_ICON[punkt.wer] : "info"),
+      el("button", { type: "button", class: "ball-link", onclick: () => springenZu(`haken:${punkt.id}`) },
+        el("span", { class: "kennung", text: punkt.id }), ` ${kuerzen(punkt.titel, 90)}`)));
+  }
+  for (const z of zusagenOffen()) {
+    dir.push(el("li", {}, icon("notiz"),
+      el("span", {}, el("span", { class: "kennung", text: z.paar.thread.nummer }), ` Deine Zusage: Ergebnis melden${z.frist ? ` · bis ${kurzDatum(z.frist)}` : ""}`),
+      el("button", { type: "button", class: "knopf zweit klein-knopf", onclick: () => ergebnisMelden(z.paar.thread) }, "Ergebnis melden")));
+  }
+  for (const a of antraegeOhneAntwort()) {
+    dir.push(el("li", {}, icon("threads"),
+      el("a", { href: ankerLink(a.thread, a.block) }, el("span", { class: "kennung", text: a.thread.nummer }), ` ${a.block.sorte}: „${a.zitat}“`)));
+  }
+  const kis = [];
+  for (const [id, { paar }] of beschluesse().nachzug) {
+    kis.push(el("li", {}, icon("uhr"),
+      el("a", { href: ankerLink(paar.thread, paar.antwort) }, el("span", { class: "kennung", text: id }),
+        ` Nachzug laut ${paar.thread.nummer} · ${seitDauer(zeitPunkt(paar.antwort.zeit))}`)));
+  }
+  for (const a of auftraegeOffen()) {
+    kis.push(el("li", {}, icon("code"),
+      el("a", { href: ankerLink(a.paar.thread, a.paar.antwort) },
+        a.punkt ? [el("span", { class: "kennung", text: a.punkt.id }), ` ${kuerzen(a.punkt.titel, 80)} (${a.paar.thread.nummer})`]
+          : [el("span", { class: "kennung", text: a.paar.thread.nummer }), ` „${kuerzen(a.satz, 110)}“`])));
+  }
+  const knopf = (art, text, n, klasse) => {
+    const b = el("button", {
+      type: "button", class: `ball-knopf ${klasse}`, "aria-expanded": offen === art ? "true" : "false", "aria-controls": "ball-liste",
+      "data-fokus": `ball:${art}`,
+      onclick: () => {
+        zustand.offen.set("ball", offen === art ? "" : art);
+        mitFokus(() => lageZeichnen(meineAufgaben()), `ball:${art}`);
+      },
+    }, el("span", { class: "ball-text", text }), " ", el("span", { class: "ball-zahl", text: String(n) }));
+    b.style.flexGrow = String(Math.max(1, n));
+    return b;
+  };
+  const liste = offen === "dir" ? dir : offen === "kis" ? kis : null;
+  return [
+    el("div", { class: "ball", role: "group", "aria-label": "Wer ist am Zug" },
+      knopf("dir", "Bei dir", dir.length, "dir"), knopf("kis", "Bei den KIs", kis.length, "kis")),
+    liste ? el("ul", { class: "ball-liste", id: "ball-liste", "aria-label": offen === "dir" ? "Bei dir" : "Bei den KIs" },
+      liste.length ? liste : el("li", { class: "hinweis", text: "Nichts offen." })) : null,
+  ];
+}
+/* Feste Rollen, höchstens drei Zeilen: Termin, Zusage mit naher Frist, Hebel. */
+function lageHinweise() {
+  const zeilen = [];
+  const termin = termineAktiv()[0];
+  if (termin) {
+    const g = zustand.roadmap ? flussGraph(zustand.roadmap) : null;
+    const vor = g && termin.ms ? vorfahrenVon(g, termin.ms) : new Set();
+    const offen = roadmapPunkte().filter(({ meilenstein, punkt }) => vor.has(meilenstein.id) && istBeiDir(punkt)).map(({ punkt }) => punkt.id);
+    const quelle = termin.paar.wahl === "eigen" ? termin.paar.wahlText : termin.paar.angaben.Termin || termin.paar.zusatz;
+    zeilen.push(el("li", { class: "hinweis-termin", "data-rolle": "termin", title: `aus ${termin.paar.antwort.sorte} ${termin.paar.thread.nummer}: „${kuerzen(quelle, 60)}“` },
+      icon("uhr"),
+      el("span", {},
+        el("span", {}, `${kurzDatum(termin.tag)} · ${terminEtikett(termin)} (${termin.paar.thread.nummer}) · `),
+        el("span", { class: "termin-rel", text: relativ(termin.tage) }),
+        offen.length ? el("span", { class: "termin-vor", text: `bis dahin bei dir offen: ${offen.join(" · ")}` }) : null)));
+  }
+  const zusage = zusagenOffen().filter((z) => z.frist && tageBis(z.frist) <= 3).sort((a, b) => a.frist - b.frist)[0];
+  if (zusage) {
+    const t = zusage.paar.thread;
+    zeilen.push(el("li", { class: "hinweis-zusage", "data-rolle": "zusage" },
+      icon("notiz"),
+      el("span", {},
+        el("span", {}, `Deine Zusage aus ${t.nummer}: Ergebnis melden · bis ${kurzDatum(zusage.frist)} · `),
+        el("span", { class: "termin-rel", text: relativ(tageBis(zusage.frist)) }),
+        zusage.abgehakt ? el("span", { class: "termin-vor", text: `${zusage.abgehakt.id} ist schon abgehakt – das Ergebnis fehlt noch im Thread.` }) : null),
+      el("button", { type: "button", class: "knopf zweit klein-knopf", "data-fokus": `zusage:${t.slug}`, onclick: () => ergebnisMelden(t) }, "Ergebnis melden")));
+  }
+  return zeilen.length ? el("ul", { class: "lage-hinweise" }, zeilen) : null;
+}
+function antraegeZeichnen() {
+  const antraege = antraegeOhneAntwort();
+  if (!antraege.length) return null;
+  return el("section", { class: "antraege", "aria-labelledby": "antraege-titel" },
+    el("h3", { id: "antraege-titel" }, icon("threads"), "Anträge ohne Antwort"),
+    el("ul", { class: "karte antraege-liste" }, antraege.map((a) =>
+      el("li", { class: "antrag" },
+        el("div", { class: "antrag-haupt" },
+          el("div", { class: "antrag-kopf" }, el("span", { class: "kennung", text: a.thread.nummer }),
+            ` · ${a.block.sorte} · ${a.block.ki}/${a.block.chat} · ${zeitLesbar(a.block.zeit)}`),
+          el("p", { class: "antrag-zitat", text: `„${a.zitat}“` })),
+        el("a", { class: "knopf zweit klein-knopf", href: ankerLink(a.thread, a.block) }, icon("pfeil"), "Im Thread antworten")))));
+}
+
 /* --- Dein Zug --- */
 
 function meineAufgaben() {
   const offeneSlugs = new Set(offeneFragen().map((q) => q.thread.slug));
+  const { nachzug } = beschluesse();
   return roadmapPunkte().filter(({ punkt }) => istMeins(punkt)
     && (punkt.status !== "x" || zustand.laufend.get(punkt.id) === "x")
+    && !nachzug.has(punkt.id)
     && !(punkt.frage && offeneSlugs.has(punkt.frage)));
 }
 
@@ -1111,6 +1633,8 @@ function fragenZeichnen() {
   fl.replaceChildren();
   if (!fragen.length) fl.append(leer("ok", "Keine offene Frage.", "Die KIs fragen mit: python forum.py frage …"));
   for (const q of fragen) fl.append(frageKarte(q));
+  const antraege = antraegeZeichnen();
+  if (antraege) fl.append(antraege);
 }
 
 function zugRoadmapZeichnen() {
@@ -1137,6 +1661,7 @@ function zugRoadmapZeichnen() {
     }
     al.append(karte);
   }
+  nachzugZeichnen();
   zuletztZeichnen();
 }
 
@@ -1165,6 +1690,8 @@ function lageZeichnen(aufgaben) {
         el("span", { class: "marke" + (entscheidungen ? " zug" : " leise") }, icon("entscheidung"), anzahl(entscheidungen, "Entscheidung", "Entscheidungen")),
         el("span", { class: "marke" + (handlaeufe ? " zug" : " leise") }, icon("handlauf"), anzahl(handlaeufe, "Handlauf", "Handläufe")),
         el("span", { class: "marke ok" }, icon("ok"), `${fertig}/${alle.length} fertig`)),
+      ...ballZeichnen(aufgaben),
+      lageHinweise(),
       rm.kritischer_pfad ? el("p", { class: "lage-pfad" }, icon("roadmap"), el("span", { text: rm.kritischer_pfad })) : null),
   );
 }
@@ -2063,8 +2590,8 @@ function roadmapZeichnen() {
   const fragen = offeneFragen().length;
   const kacheln = [
     { wert: `${fertig}/${alle.length}`, name: "Punkte fertig", ic: "ok", art: "ok" },
-    { wert: String(zahl((p) => p.wer === "betreiber" && p.status !== "x")), name: "Entscheidungen bei dir", ic: "entscheidung", art: "zug", link: "#zug" },
-    { wert: String(zahl((p) => p.wer === "betrieb" && p.status !== "x")), name: "Handläufe bei dir", ic: "handlauf", art: "zug", link: "#zug" },
+    { wert: String(zahl((p) => p.wer === "betreiber" && istBeiDir(p))), name: "Entscheidungen bei dir", ic: "entscheidung", art: "zug", link: "#zug" },
+    { wert: String(zahl((p) => p.wer === "betrieb" && istBeiDir(p))), name: "Handläufe bei dir", ic: "handlauf", art: "zug", link: "#zug" },
     { wert: String(fragen), name: "offene Fragen", ic: "rueckfrage", art: fragen ? "zug" : "", link: "#zug" },
   ];
   gesamt.append(
@@ -2143,7 +2670,7 @@ function meilensteinZahlen(m) {
   const p = m.punkte || [];
   const x = p.filter((q) => q.status === "x").length;
   const t = p.filter((q) => q.status === "~").length;
-  const beiDir = p.filter((q) => istMeins(q) && q.status !== "x").length;
+  const beiDir = p.filter(istBeiDir).length;
   const stufe = p.length && x === p.length ? "fertig" : x || t ? "teil" : "offen";
   return { n: p.length, x, t, beiDir, stufe };
 }
@@ -2221,16 +2748,19 @@ function flussZeichnen() {
   const g = flussGraph(rm);
 
   const zahlen = new Map(g.knoten.map((m) => [m.id, meilensteinZahlen(m)]));
+  const termine = new Map();
+  for (const x of termineAktiv()) if (x.ms && !termine.has(x.ms)) termine.set(x.ms, x);
   const vorgaenger = (id) => g.kanten.filter((k) => k.nach === id).map((k) => k.von);
   const knoten = (m) => {
     const z = zahlen.get(m.id);
     const f1 = el("span", { class: "f-x" }); f1.style.width = z.n ? `${(z.x / z.n) * 100}%` : "0";
     const f2 = el("span", { class: "f-t" }); f2.style.width = z.n ? `${(z.t / z.n) * 100}%` : "0";
     const vor = vorgaenger(m.id);
+    const termin = termine.get(m.id);
     return el("button", {
       type: "button",
       class: `fluss-knoten ms-${z.stufe}${g.kette.includes(m.id) ? " kritisch" : ""}`,
-      "aria-label": `${m.id} ${m.titel}: ${z.x} von ${z.n} fertig${z.beiDir ? `, ${z.beiDir} bei dir` : ""}${vor.length ? `, nach ${vor.join(", ")}` : ""}. Punkte zeigen`,
+      "aria-label": `${m.id} ${m.titel}: ${z.x} von ${z.n} fertig${z.beiDir ? `, ${z.beiDir} bei dir` : ""}${vor.length ? `, nach ${vor.join(", ")}` : ""}${termin ? `, Termin ${langDatum(termin.tag)}` : ""}. Punkte zeigen`,
       title: `${m.id} ${m.titel} · ${z.x}/${z.n} fertig`,
       "data-fokus": `fluss:${m.id}`,
       onclick: () => meilensteinZeigen(m.id),
@@ -2241,6 +2771,7 @@ function flussZeichnen() {
         : z.stufe === "fertig" ? el("span", { class: "marke ok" }, icon("haken"), "fertig")
           : z.beiDir ? el("span", { class: "marke zug", text: `${z.beiDir} bei dir` }) : null),
     el("span", { class: "fluss-titel", text: m.titel }),
+    termin ? el("span", { class: "fluss-termin" }, icon("uhr"), `Termin ${kurzDatum(termin.tag)}`) : null,
     vor.length ? el("span", { class: "fluss-nach", text: `nach ${vor.join(" · ")}` }) : null,
     el("span", { class: "fluss-fuss" },
       el("span", { class: "fortschritt" }, f1, f2),
@@ -2395,6 +2926,7 @@ async function mermaidKopieren(text, box, pre) {
 function punktZeile(q, offeneSlugs) {
   const status = anzeigeStatus(q);
   const frageOffen = q.frage && offeneSlugs.has(q.frage);
+  const nachzug = beschluesse().nachzug.get(q.id);
   const verweis = q.frage || q.thread;
   const t = verweis ? threadZuSlug(verweis) : null;
   return el("li", { class: "punkt" + (status === "x" ? " ist-fertig" : ""), "data-zeile": q.id },
@@ -2405,6 +2937,7 @@ function punktZeile(q, offeneSlugs) {
       q.erledigt ? el("p", { class: "punkt-notiz" }, icon("uhr"), ` erledigt ${datumLesbar(q.erledigt)}${q.von ? " · " + q.von : ""}`) : null),
     el("div", { class: "punkt-rechts" },
       frageOffen ? el("a", { class: "marke zug", href: "#zug" }, icon("rueckfrage"), "Frage offen") : null,
+      nachzug ? el("a", { class: "marke leise", href: ankerLink(nachzug.paar.thread, nachzug.paar.antwort), title: `entschieden in ${nachzug.paar.thread.nummer} – roadmap.json zieht noch nach` }, icon("uhr"), "wartet auf Nachzug") : null,
       t ? threadVerweis(t, true) : null,
       werMarke(q.wer, q.status === "x")),
   );
@@ -3226,7 +3759,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-15";
+const FASSUNG = "2026.10.03-19";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
@@ -3342,7 +3875,7 @@ function verdrahten() {
     try {
       for (const k of Object.keys(sessionStorage)) if (k.startsWith("blob:")) sessionStorage.removeItem(k);
     } catch (_) { /* gesperrt */ }
-    for (const id of ["zug-neu", "zug-waechter", "zug-lage", "fragen-liste", "aufgaben-liste", "zuletzt-box", "roadmap-gesamt", "roadmap-fluss",
+    for (const id of ["zug-neu", "zug-waechter", "zug-lage", "fragen-liste", "aufgaben-liste", "nachzug-box", "zuletzt-box", "roadmap-gesamt", "roadmap-fluss",
       "roadmap-meilensteine", "roadmap-ready-box", "roadmap-extra", "thread-liste", "thread-detail"]) $(id).replaceChildren();
     document.title = SEITENTITEL;
     abzeichenSetzen(0);
