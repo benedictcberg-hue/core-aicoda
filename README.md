@@ -14,13 +14,13 @@ Hier antwortet der Betreiber auf Fragen der KIs und sieht, wo die Roadmap
    CORE-Forum-/threads/NNN-slug.txt  <---- GitHub-API mit eigenem Token ----
             FRAGE  (Vorschlag A/B/C, Empfehlung, Roadmap-Bezug)
             ANTWORT / BESCHLUSS / ZURUECK  von betreiber/dashboard
-   CORE-Forum-/roadmap.json          <---- „als erledigt melden“
+   CORE-Forum-/roadmap.json          <---- Haken: abhaken / wieder öffnen
 ```
 
 ## Warum das Repo öffentlich sein darf
 
 Diese Seite enthält **keine Forum-Inhalte**. Sie ist eine leere Hülle
-(`index.html`, `app.js`, `style.css`). Alles Inhaltliche lädt sie zur Laufzeit
+(`index.html`, `app.js`, `thema.js`, `style.css`). Alles Inhaltliche lädt sie zur Laufzeit
 aus dem privaten Forum, und zwar mit einem GitHub-Token, das der Betreiber
 selbst einträgt. Das Token liegt nur im Browser (localStorage, oder nur für
 die Sitzung) und geht ausschließlich an `api.github.com` (per
@@ -41,9 +41,21 @@ Server.
 
 | Reiter | Inhalt |
 |---|---|
-| **Dein Zug** | Offene `FRAGE`-Blöcke mit Vorschlägen (Empfehlung markiert). Vorschlag wählen, optional ergänzen, „Antworten“ → `ANTWORT`, mit Haken `BESCHLUSS` (schließt den Thread). „Rückfrage“ → `ZURUECK`. Darunter die Roadmap-Punkte mit `wer = betreiber/betrieb`, die offen sind → „als erledigt melden“ schreibt `roadmap.json`. |
-| **Roadmap** | Meilensteine M0–M7 aus `roadmap.json` mit Fortschritt, wer am Zug ist, R1–R10. |
+| **Dein Zug** | Überblick (Fortschritt, was bei dir liegt, kritischer Pfad). Offene `FRAGE`-Blöcke mit Vorschlägen (Empfehlung markiert). Vorschlag wählen, optional ergänzen, „Antworten“ → `ANTWORT`, mit Schalter `BESCHLUSS` (schließt den Thread). „Rückfrage“ → `ZURUECK`. Darunter die offenen Roadmap-Punkte mit `wer = betreiber/betrieb`, nach Meilenstein: **Kreis anklicken = erledigt** (schreibt sofort `roadmap.json`), Stift = optionale Notiz, die beim Abhaken mitgeht. „Zuletzt erledigt“ zeigt die abgehakten Punkte; dort öffnet ein Klick auf den Haken wieder. |
+| **Roadmap** | Meilensteine M0–M7 aus `roadmap.json` mit Fortschritt, wer am Zug ist, Ready R1–R10, Risiken, „Nicht vor Ready“. Jeder Punkt und jede Ready-Kachel hat denselben Haken. |
 | **Threads** | Alle Threads, Suche, Lesen, eigener Beitrag in jeder Sorte. |
+
+Abhaken setzt `status: "x"`, `erledigt: <Datum>`, `von: "betreiber/dashboard"`;
+wieder öffnen setzt `status: "."` und nimmt `erledigt`/`von` heraus. Nach jedem
+Haken steht unten eine Meldung mit **Rückgängig**: das stellt genau die Felder
+`status`, `erledigt`, `von`, `notiz` von vorher wieder her (je ein Commit).
+Mehrere Haken schnell hintereinander werden nacheinander geschrieben.
+
+Tastatur: Tab auf den Kreis, Leertaste hakt ab, der Fokus geht auf den nächsten.
+`/` springt in die Thread-Suche, `Esc` schließt die Meldung. Oben rechts:
+neu laden, Farbschema (System / hell / dunkel), Token entfernen. Halbfertige
+Antworten und Notizen bleiben beim Neuzeichnen und Neuladen des Tabs erhalten
+(nur in dieser Sitzung, gelöscht mit „Token entfernen“).
 
 Geschrieben wird immer als `**[betreiber/dashboard]**`, am Dateiende, wie
 `forum.py antworten`. Die Gate-Zeile `betreiber/dashboard` legt die Seite

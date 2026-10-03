@@ -13,13 +13,21 @@ const SORTEN = ["BEFUND", "ANTRAG", "EINWAND", "ZUSTIMMUNG", "ZURUECK", "BESCHLU
 const NICHT_THREADS = ["LESE-MICH.txt", "werkstatt.txt", "INDEX.txt"];
 const KOPF = /^\*\*\[([a-z0-9_-]+)\/([a-z0-9_-]+)\]\*\* (\S+)$/;
 const TOKEN_SCHLUESSEL = "core-pult-token";
+const THEMA_SCHLUESSEL = "core-pult-thema";
+const ENTWURF_SCHLUESSEL = "core-pult-entwuerfe";
 const ZWEIG = new URLSearchParams(location.search).get("branch") || "main";
+const SEITENTITEL = document.title;
 
 const zustand = {
   token: "",
   threads: [],          // {slug, pfad, sha, text, kopf, titel, bloecke, vorgeschichte, offen, geschlossen}
   roadmap: null,        // geparstes roadmap.json
   roadmapSha: null,
+  geladen: null,        // Zeitpunkt des letzten vollständigen Ladens
+  gateOk: false,        // Gate-Zeile in dieser Sitzung schon geprüft
+  laufend: new Map(),   // Punkt-ID -> Zielstatus, solange der Haken geschrieben wird
+  offen: new Map(),     // auf-/zugeklappte Bereiche, überlebt das Neuzeichnen
+  fokusNach: null,      // data-fokus-Schlüssel für den Fokus, wenn das fokussierte Element verschwindet
 };
 
 /* ---------- kleine Helfer ---------- */
@@ -42,6 +50,63 @@ function el(tag, attrs, ...kinder) {
   return knoten;
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs) {
+  const knoten = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) knoten.setAttribute(k, String(v));
+  return knoten;
+}
+
+/* Strich-Icons im 24er-Raster. Ein Eintrag ist ein Pfad oder {kreis}/{rechteck}, „voll“ = gefüllt. */
+const ICONS = {
+  haken: ["M20 6 9 17l-5-5"],
+  x: ["M18 6 6 18", "M6 6l12 12"],
+  neu: ["M21 12a9 9 0 1 1-2.64-6.36L21 8", "M21 3v5h-5"],
+  sonne: [{ kreis: [12, 12, 4] }, "M12 2v2", "M12 20v2", "m4.93 4.93 1.41 1.41", "m17.66 17.66 1.41 1.41", "M2 12h2", "M20 12h2", "m6.34 17.66-1.41 1.41", "m19.07 4.93-1.41 1.41"],
+  mond: ["M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"],
+  auto: [{ kreis: [12, 12, 9] }, { pfad: "M12 3a9 9 0 0 1 0 18z", voll: true }],
+  abmelden: ["M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4", "m16 17 5-5-5-5", "M21 12H9"],
+  zug: ["M22 12h-6l-2 3h-4l-2-3H2", "M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"],
+  roadmap: ["M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z", "M4 22v-7"],
+  threads: ["M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"],
+  suche: [{ kreis: [11, 11, 7] }, "m21 21-4.3-4.3"],
+  pfeil: ["M5 12h14", "m13 6 6 6-6 6"],
+  zurueck: ["M19 12H5", "m11 18-6-6 6-6"],
+  senden: ["m22 2-11 11", "M22 2 15 22l-4-9-9-4z"],
+  undo: ["M9 14 4 9l5-5", "M4 9h11a5 5 0 0 1 0 10h-3"],
+  rueckfrage: [{ kreis: [12, 12, 9] }, "M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3", "M12 17h.01"],
+  notiz: ["M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"],
+  warnung: ["M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z", "M12 9v4", "M12 17h.01"],
+  uhr: [{ kreis: [12, 12, 9] }, "M12 7v5l3 2"],
+  code: ["m16 18 6-6-6-6", "m8 6-6 6 6 6"],
+  entscheidung: ["M12 3v3", "M12 13v8", "M5 6h12l3 3.5-3 3.5H5z"],
+  handlauf: ["M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"],
+  stern: [{ pfad: "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z", voll: true }],
+  runter: ["m6 9 6 6 6-6"],
+  schloss: [{ rechteck: [3, 11, 18, 11, 2] }, "M7 11V7a5 5 0 0 1 10 0v4"],
+  info: [{ kreis: [12, 12, 9] }, "M12 16v-4", "M12 8h.01"],
+  ready: ["m3 7 2 2 4-4", "m3 17 2 2 4-4", "M13 7h8", "M13 12h8", "M13 17h8"],
+  pause: [{ kreis: [12, 12, 9] }, "M10 15V9", "M14 15V9"],
+  ok: [{ kreis: [12, 12, 9] }, "m8 12 3 3 5-6"],
+};
+
+function icon(name, klasse) {
+  const svg = svgEl("svg", { viewBox: "0 0 24 24", class: "ic" + (klasse ? " " + klasse : ""), "aria-hidden": "true", focusable: "false" });
+  for (const teil of ICONS[name] || []) {
+    let k;
+    if (typeof teil === "string") k = svgEl("path", { d: teil });
+    else if (teil.pfad) k = svgEl("path", { d: teil.pfad });
+    else if (teil.kreis) k = svgEl("circle", { cx: teil.kreis[0], cy: teil.kreis[1], r: teil.kreis[2] });
+    else if (teil.rechteck) {
+      const [x, y, w, h, rx] = teil.rechteck;
+      k = svgEl("rect", { x, y, width: w, height: h, rx });
+    }
+    if (teil.voll) k.setAttribute("class", "voll");
+    svg.append(k);
+  }
+  return svg;
+}
+
 function speicherLesen(schluessel) {
   for (const s of [() => localStorage, () => sessionStorage]) {
     try { const w = s().getItem(schluessel); if (w) return w; } catch (_) { /* gesperrt */ }
@@ -54,6 +119,26 @@ function speicherSchreiben(schluessel, wert, dauerhaft) {
 function speicherLoeschen(schluessel) {
   try { localStorage.removeItem(schluessel); } catch (_) { /* gesperrt */ }
   try { sessionStorage.removeItem(schluessel); } catch (_) { /* gesperrt */ }
+}
+
+/* Entwürfe (Antworttext, Wahl, Notiz) überleben das Neuzeichnen und ein Neuladen des Tabs. */
+const entwuerfe = (() => {
+  try { return JSON.parse(sessionStorage.getItem(ENTWURF_SCHLUESSEL) || "{}") || {}; } catch (_) { return {}; }
+})();
+function entwurf(schluessel) {
+  return Object.prototype.hasOwnProperty.call(entwuerfe, schluessel) ? entwuerfe[schluessel] : "";
+}
+function entwuerfeSichern() {
+  try { sessionStorage.setItem(ENTWURF_SCHLUESSEL, JSON.stringify(entwuerfe)); } catch (_) { /* voll oder gesperrt */ }
+}
+function entwurfSetzen(schluessel, wert) {
+  if (wert === "" || wert === null || wert === undefined) delete entwuerfe[schluessel];
+  else entwuerfe[schluessel] = wert;
+  entwuerfeSichern();
+}
+function entwuerfeLoeschen(praefix) {
+  for (const k of Object.keys(entwuerfe)) if (k.startsWith(praefix)) delete entwuerfe[k];
+  entwuerfeSichern();
 }
 
 function b64ZuText(b64) {
@@ -71,26 +156,58 @@ function textZuB64(text) {
   return btoa(bin);
 }
 
+const zwei = (n) => String(n).padStart(2, "0");
 function jetzt() {
   return new Date().toISOString().slice(0, 16) + "Z";
 }
+/* Kalendertag hier am Platz, nicht in UTC: ein Haken um 0:30 Uhr gehört zum neuen Tag. */
 function heute() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  return `${d.getFullYear()}-${zwei(d.getMonth() + 1)}-${zwei(d.getDate())}`;
 }
 function zeitLesbar(iso) {
   const d = new Date(iso.replace(/Z$/, ":00Z"));
   if (isNaN(d)) return iso;
   return d.toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
+function datumLesbar(tag) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(tag || "");
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : tag || "";
+}
+function anzahl(n, eins, viele) {
+  return `${n} ${n === 1 ? eins : viele}`;
+}
+function bewegungAus() {
+  return window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/* ---------- Meldung (unten, mit optionaler Aktion wie „Rückgängig“) ---------- */
 
 let meldungTimer = null;
-function melden(text, fehler) {
-  const m = $("meldung");
-  m.textContent = text;
-  m.classList.toggle("fehler", !!fehler);
-  m.hidden = false;
+function meldungZu() {
   clearTimeout(meldungTimer);
-  meldungTimer = setTimeout(() => { m.hidden = true; }, fehler ? 9000 : 4000);
+  $("meldung").hidden = true;
+}
+function meldungSpaeterZu(ms) {
+  clearTimeout(meldungTimer);
+  meldungTimer = setTimeout(meldungZu, ms);
+}
+function melden(text, optionen) {
+  const o = optionen && typeof optionen === "object" ? optionen : { fehler: !!optionen };
+  const m = $("meldung");
+  m.replaceChildren(
+    icon(o.fehler ? "warnung" : "ok", "meldung-ic"),
+    el("span", { class: "meldung-text", text }),
+    o.aktion ? el("button", {
+      type: "button", class: "meldung-aktion",
+      onclick: () => { meldungZu(); o.aktion.tun(); },
+    }, icon(o.aktion.icon || "undo"), o.aktion.text) : null,
+    el("button", { type: "button", class: "meldung-zu", "aria-label": "Meldung schließen", title: "Schließen", onclick: meldungZu }, icon("x")),
+  );
+  m.className = "meldung" + (o.fehler ? " fehler" : "");
+  m.hidden = false;
+  m.dataset.dauer = String(o.fehler ? 9000 : o.aktion ? 10000 : 4000);
+  meldungSpaeterZu(Number(m.dataset.dauer));
 }
 
 /* ---------- GitHub ---------- */
@@ -130,6 +247,8 @@ async function dateiSchreiben(pfad, text, sha, meldung) {
   return r.content.sha;
 }
 
+const istKonflikt = (e) => e instanceof GitHubFehler && (e.status === 409 || e.status === 422);
+
 /* Liest frisch, hängt an, schreibt. Bei Konflikt (jemand schrieb dazwischen) einmal neu. */
 async function anhaengen(pfad, block, meldung) {
   for (let versuch = 0; versuch < 3; versuch++) {
@@ -139,19 +258,22 @@ async function anhaengen(pfad, block, meldung) {
       const neuSha = await dateiSchreiben(pfad, neu, sha, meldung);
       return { text: neu, sha: neuSha };
     } catch (e) {
-      if (!(e instanceof GitHubFehler) || (e.status !== 409 && e.status !== 422) || versuch === 2) throw e;
+      if (!istKonflikt(e) || versuch === 2) throw e;
     }
   }
   throw new Error("nicht geschrieben");
 }
 
 async function gateSicherstellen() {
+  if (zustand.gateOk) return;
   const pfad = "gate/anmeldungen.txt";
   const zeile = `\t${ICH.ki}\t${ICH.chat}`;
   const { text, sha } = await dateiLesen(pfad);
-  if (text.split("\n").some((z) => z.endsWith(zeile))) return;
-  const neu = (text.endsWith("\n") ? text : text + "\n") + `${jetzt()}${zeile}\n`;
-  await dateiSchreiben(pfad, neu, sha, `Gate: ${ICH.ki}/${ICH.chat}`);
+  if (!text.split("\n").some((z) => z.endsWith(zeile))) {
+    const neu = (text.endsWith("\n") ? text : text + "\n") + `${jetzt()}${zeile}\n`;
+    await dateiSchreiben(pfad, neu, sha, `Gate: ${ICH.ki}/${ICH.chat}`);
+  }
+  zustand.gateOk = true;
 }
 
 /* ---------- Format ---------- */
@@ -249,49 +371,71 @@ async function blobLesen(sha) {
   return text;
 }
 
+function hatDaten() {
+  return zustand.threads.length > 0 || !!zustand.roadmap;
+}
+
 async function laden() {
-  zeigen("lade");
-  $("lade-balken").style.width = "5%";
-  $("lade-text").textContent = "Lade Verzeichnis …";
-  const baum = await gh(`/git/trees/${encodeURIComponent(ZWEIG)}?recursive=1`);
-  const dateien = baum.tree.filter((e) => e.type === "blob");
-  const threadDateien = dateien.filter((e) => /^threads\/[^/]+\.txt$/.test(e.path)
-    && !NICHT_THREADS.includes(e.path.slice("threads/".length)));
-  const roadmapDatei = dateien.find((e) => e.path === "roadmap.json");
+  // Ein Haken, der gerade geschrieben wird, soll nicht von einem älteren Stand überholt werden.
+  await roadmapKette;
+  const erstesMal = !hatDaten();
+  const knopf = $("neu-laden");
+  if (erstesMal) zeigen("lade");
+  else { knopf.setAttribute("aria-busy", "true"); knopf.disabled = true; }
+  try {
+    $("lade-balken").style.width = "5%";
+    $("lade-text").textContent = "Lade Verzeichnis …";
+    const baum = await gh(`/git/trees/${encodeURIComponent(ZWEIG)}?recursive=1`);
+    const dateien = baum.tree.filter((e) => e.type === "blob");
+    const threadDateien = dateien.filter((e) => /^threads\/[^/]+\.txt$/.test(e.path)
+      && !NICHT_THREADS.includes(e.path.slice("threads/".length)));
+    const roadmapDatei = dateien.find((e) => e.path === "roadmap.json");
 
-  let fertig = 0;
-  const gesamt = threadDateien.length + (roadmapDatei ? 1 : 0);
-  const fortschritt = () => {
-    fertig++;
-    $("lade-balken").style.width = `${5 + Math.round((fertig / gesamt) * 95)}%`;
-    $("lade-text").textContent = `Lade Threads … ${fertig}/${gesamt}`;
-  };
+    let fertig = 0;
+    const gesamt = threadDateien.length + (roadmapDatei ? 1 : 0);
+    const fortschritt = () => {
+      fertig++;
+      $("lade-balken").style.width = `${5 + Math.round((fertig / gesamt) * 95)}%`;
+      $("lade-text").textContent = `Lade Threads … ${fertig}/${gesamt}`;
+    };
 
-  const auftraege = threadDateien.map((e) => async () => {
-    const text = await blobLesen(e.sha);
-    fortschritt();
-    const slug = e.path.slice("threads/".length, -4);
-    return { ...threadParsen(slug, text), pfad: e.path, sha: e.sha };
-  });
-  zustand.threads = (await alles(auftraege, 8)).sort((a, b) => b.slug.localeCompare(a.slug));
+    const auftraege = threadDateien.map((e) => async () => {
+      const text = await blobLesen(e.sha);
+      fortschritt();
+      const slug = e.path.slice("threads/".length, -4);
+      return { ...threadParsen(slug, text), pfad: e.path, sha: e.sha };
+    });
+    zustand.threads = (await alles(auftraege, 8)).sort((a, b) => b.slug.localeCompare(a.slug));
 
-  zustand.roadmap = null;
-  if (roadmapDatei) {
-    try {
-      zustand.roadmap = JSON.parse(await blobLesen(roadmapDatei.sha));
-      zustand.roadmapSha = roadmapDatei.sha;
-    } catch (e) {
-      melden("roadmap.json ist kein gültiges JSON: " + e.message, true);
+    zustand.roadmap = null;
+    if (roadmapDatei) {
+      try {
+        zustand.roadmap = JSON.parse(await blobLesen(roadmapDatei.sha));
+        zustand.roadmapSha = roadmapDatei.sha;
+      } catch (e) {
+        melden("roadmap.json ist kein gültiges JSON: " + e.message, true);
+      }
+      fortschritt();
     }
-    fortschritt();
+    zustand.geladen = new Date();
+  } finally {
+    knopf.removeAttribute("aria-busy");
+    knopf.disabled = false;
   }
 
-  $("verbindung").textContent = ZWEIG === "main" ? "verbunden" : `Zweig ${ZWEIG}`;
-  $("verbindung").className = "pille " + (ZWEIG === "main" ? "ok" : "zweig");
-  for (const id of ["verbindung", "neu-laden", "abmelden", "reiter"]) $(id).hidden = false;
+  const pille = $("verbindung");
+  pille.replaceChildren(el("span", { class: "pille-punkt", "aria-hidden": "true" }),
+    el("span", { class: "pille-text", text: ZWEIG === "main" ? "verbunden" : `Zweig ${ZWEIG}` }));
+  pille.className = "pille " + (ZWEIG === "main" ? "ok" : "zweig");
+  pille.title = `${OWNER}/${REPO} @ ${ZWEIG}`;
+  for (const id of ["verbindung", "neu-laden", "abmelden", "reiter", "fuss"]) $(id).hidden = false;
   if (zustand.roadmap) {
-    $("kopf-unter").textContent = `CORE-Forum · Roadmap-Stand ${zustand.roadmap.stand || "?"} · ${zustand.roadmap.basis || ""}`;
+    $("kopf-unter").textContent = `Roadmap-Stand ${datumLesbar(zustand.roadmap.stand) || "?"} · ${zustand.roadmap.basis || ""}`;
   }
+  const uhr = zustand.geladen.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  $("fuss-quelle").textContent = `${REPO} @ ${ZWEIG}`;
+  $("fuss-stand").textContent = `geladen ${uhr}`;
+  $("neu-laden").title = `Neu laden (zuletzt ${uhr})`;
   allesZeichnen();
 }
 
@@ -314,7 +458,7 @@ function zeigen(name) {
 
 function route() {
   if (!zustand.token) { zeigen("anmeldung"); return; }
-  if (!zustand.threads.length && !zustand.roadmap) return;
+  if (!hatDaten()) return;
   const h = decodeURIComponent(location.hash.slice(1)) || "zug";
   let reiter = h;
   if (h.startsWith("t/")) {
@@ -328,15 +472,67 @@ function route() {
     zeigen("ansicht-zug");
   }
   for (const a of document.querySelectorAll("#reiter a")) {
-    a.classList.toggle("aktiv", a.dataset.reiter === reiter);
+    const aktiv = a.dataset.reiter === reiter;
+    a.classList.toggle("aktiv", aktiv);
+    if (aktiv) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  }
+}
+
+/* Zeichnet neu und gibt den Fokus dem gleichen Element zurück (Schlüssel data-fokus),
+ * samt Cursorposition. Verschwindet es (abgehakter Punkt), bekommt ihn zustand.fokusNach. */
+/* Sichtbar heißt auch: nicht in einem zugeklappten <details> (dort hat ein Element in
+ * neueren Browsern noch Rechtecke, nimmt aber keinen Fokus an). */
+function istSichtbar(e) {
+  if (typeof e.checkVisibility === "function") return e.checkVisibility();
+  return e.getClientRects().length > 0 && !e.closest("details:not([open]) > :not(summary)");
+}
+function sichtbarFinden(schluessel) {
+  if (!schluessel) return null;
+  for (const e of document.querySelectorAll(`[data-fokus="${CSS.escape(schluessel)}"]`)) {
+    if (istSichtbar(e)) return e;
+  }
+  return null;
+}
+function mitFokus(zeichnen, gewuenscht) {
+  const aktiv = document.activeElement;
+  const schluessel = aktiv && aktiv.dataset ? aktiv.dataset.fokus : undefined;
+  let auswahl = null;
+  try {
+    if (aktiv && typeof aktiv.selectionStart === "number") auswahl = [aktiv.selectionStart, aktiv.selectionEnd];
+  } catch (_) { /* Feldart ohne Auswahl */ }
+  zeichnen();
+  if (!gewuenscht && (!schluessel || (aktiv && aktiv.isConnected))) return;
+  for (const kandidat of [gewuenscht, schluessel, zustand.fokusNach]) {
+    const ziel = sichtbarFinden(kandidat);
+    if (!ziel) continue;
+    ziel.focus({ preventScroll: true });
+    if (document.activeElement !== ziel) continue;
+    if (kandidat === zustand.fokusNach) zustand.fokusNach = null;
+    if (auswahl && kandidat === schluessel && typeof ziel.setSelectionRange === "function") {
+      try { ziel.setSelectionRange(auswahl[0], auswahl[1]); } catch (_) { /* Feldart ohne Auswahl */ }
+    }
+    return;
   }
 }
 
 function allesZeichnen() {
-  zugZeichnen();
-  roadmapZeichnen();
-  threadListeZeichnen();
-  route();
+  mitFokus(() => {
+    fragenZeichnen();
+    zugRoadmapZeichnen();
+    roadmapZeichnen();
+    threadListeZeichnen();
+    zaehlerSetzen();
+    route();
+  });
+}
+
+/* Nach einem Haken: nur was an roadmap.json hängt. Fragen und Thread-Ansicht bleiben stehen. */
+function roadmapTeileZeichnen(gewuenscht) {
+  mitFokus(() => {
+    zugRoadmapZeichnen();
+    roadmapZeichnen();
+    zaehlerSetzen();
+  }, gewuenscht);
 }
 
 function offeneFragen() {
@@ -360,70 +556,434 @@ function threadZuSlug(slug) {
 }
 
 const WER = { code: "KI · Code", betreiber: "deine Entscheidung", betrieb: "dein Handlauf" };
-const STATUS = { x: ["fertig", "ok", "x"], "~": ["teilweise", "teil", "t"], ".": ["offen", "offen", "o"] };
+const WER_ICON = { code: "code", betreiber: "entscheidung", betrieb: "handlauf" };
+const STATUS = { x: ["fertig", "ok"], "~": ["teilweise", "teil"], ".": ["offen", "offen"] };
+
+const istMeins = (p) => p.wer === "betreiber" || p.wer === "betrieb";
+const anzeigeStatus = (eintrag) => (zustand.laufend.has(eintrag.id) ? zustand.laufend.get(eintrag.id) : eintrag.status);
+
+function werText(wer) {
+  const legende = zustand.roadmap && zustand.roadmap.legende && zustand.roadmap.legende.wer;
+  return (legende && legende[wer]) || WER[wer] || wer || "?";
+}
+function werMarke(wer, fertig) {
+  const art = wer === "code" ? "" : fertig ? "ok" : "zug";
+  return el("span", { class: `marke ${art}`.trim() }, icon(WER_ICON[wer] || "info"), werText(wer));
+}
+function leer(ic, titel, text) {
+  return el("div", { class: "leer" }, icon(ic, "leer-ic"),
+    el("div", {}, el("strong", { text: titel }), text ? el("p", { text }) : null));
+}
+function threadVerweis(t, kurz) {
+  return el("a", { class: "verweis" + (kurz ? " kurz" : ""), href: `#t/${encodeURIComponent(t.slug)}`, title: t.slug },
+    icon("threads"), el("span", { class: "verweis-nr", text: t.nummer || "–" }),
+    kurz ? null : el("span", { class: "verweis-titel", text: t.titel }));
+}
+function ringBox(anteil, beschriftung) {
+  const r = 18;
+  const umfang = 2 * Math.PI * r;
+  const svg = svgEl("svg", { viewBox: "0 0 44 44", class: "ring", "aria-hidden": "true", focusable: "false" });
+  svg.append(svgEl("circle", { cx: 22, cy: 22, r, class: "ring-grund" }));
+  if (anteil > 0) {
+    svg.append(svgEl("circle", {
+      cx: 22, cy: 22, r, class: "ring-wert", transform: "rotate(-90 22 22)",
+      "stroke-dasharray": `${(anteil * umfang).toFixed(2)} ${umfang.toFixed(2)}`,
+    }));
+  }
+  return el("div", { class: "ring-box", role: "img", "aria-label": beschriftung }, svg,
+    el("span", { class: "ring-zahl", "aria-hidden": "true", text: `${Math.round(anteil * 100)}%` }));
+}
+function aufklappen(details, schluessel, vorgabe) {
+  details.open = zustand.offen.has(schluessel) ? zustand.offen.get(schluessel) : vorgabe;
+  details.addEventListener("toggle", () => zustand.offen.set(schluessel, details.open));
+  return details;
+}
+
+/* --- Haken: ein Klick schreibt roadmap.json, Rückgängig in der Meldung --- */
+
+const HAKEN_FELDER = ["status", "erledigt", "von", "notiz"];
+
+let roadmapKette = Promise.resolve();
+/* Schreibvorgänge auf roadmap.json laufen nacheinander, sonst stolpert jeder über den sha des anderen. */
+function nacheinander(arbeit) {
+  const lauf = roadmapKette.then(arbeit);
+  roadmapKette = lauf.catch(() => {});
+  return lauf;
+}
+
+function eintragFinden(rm, id, art) {
+  if (art === "ready") return (rm.ready || []).find((r) => r.id === id) || null;
+  for (const m of rm.meilensteine || []) for (const p of m.punkte || []) if (p.id === id) return p;
+  return null;
+}
+
+async function roadmapAendern(id, art, aendern, betreff) {
+  for (let versuch = 0; versuch < 3; versuch++) {
+    const { text, sha } = await dateiLesen("roadmap.json");
+    const rm = JSON.parse(text);
+    const eintrag = eintragFinden(rm, id, art);
+    if (!eintrag) throw new Error(`${id} steht nicht mehr in roadmap.json`);
+    const vorher = {};
+    for (const f of HAKEN_FELDER) if (Object.prototype.hasOwnProperty.call(eintrag, f)) vorher[f] = eintrag[f];
+    if (!aendern(eintrag)) {
+      // Schon so, wie gewünscht (jemand war schneller): nichts schreiben, nur den frischen Stand zeigen.
+      zustand.roadmap = rm;
+      zustand.roadmapSha = sha;
+      return { vorher, geaendert: false };
+    }
+    const neu = JSON.stringify(rm, null, 2) + "\n";
+    try {
+      await gateSicherstellen();
+      const neuSha = await dateiSchreiben("roadmap.json", neu, sha, `roadmap: ${betreff} [${ICH.ki}/${ICH.chat}]`);
+      blobMerken(neuSha, neu);
+      zustand.roadmap = rm;
+      zustand.roadmapSha = neuSha;
+      return { vorher, geaendert: true };
+    } catch (e) {
+      if (!istKonflikt(e) || versuch === 2) throw e;
+    }
+  }
+  throw new Error("nicht geschrieben");
+}
+
+function schreibFehler(e) {
+  const hinweis = e instanceof GitHubFehler && (e.status === 403 || e.status === 404)
+    ? " — hat das Token „Contents: Read and write“ auf CORE-Forum-?" : "";
+  melden("Nicht geschrieben: " + e.message + hinweis, true);
+}
+
+/* Die Zeile in „Dein Zug“ wechselt bei jedem Haken die Liste: kurz ausblenden statt springen. */
+function wegAnimieren(id) {
+  if (bewegungAus() || $("ansicht-zug").hidden) return Promise.resolve();
+  const zeilen = document.querySelectorAll(`#ansicht-zug [data-zeile="${CSS.escape(id)}"]`);
+  if (!zeilen.length) return Promise.resolve();
+  for (const z of zeilen) z.classList.add("geht");
+  return new Promise((fertig) => setTimeout(fertig, 280));
+}
+
+/* Fokus nach dem Haken: auf den nächsten Kreis derselben Liste (Tastatur: Leertaste, Leertaste, …). */
+function naechsterFokus(id) {
+  const knopf = sichtbarFinden(`haken:${id}`);
+  const liste = knopf && knopf.closest("[data-hakenliste]");
+  if (!liste) return null;
+  const alle = [...liste.querySelectorAll(".haken")];
+  const i = alle.indexOf(knopf);
+  const nachbar = alle[i + 1] || alle[i - 1];
+  return nachbar ? nachbar.dataset.fokus : null;
+}
+
+async function statusSchreiben({ id, art, ziel, aendern, betreff, erfolg }) {
+  if (zustand.laufend.has(id)) return;
+  zustand.fokusNach = naechsterFokus(id);
+  zustand.laufend.set(id, ziel);
+  roadmapTeileZeichnen();
+  try {
+    const ergebnis = await nacheinander(() => roadmapAendern(id, art, aendern, betreff));
+    await wegAnimieren(id);
+    zustand.laufend.delete(id);
+    roadmapTeileZeichnen();
+    erfolg(ergebnis);
+  } catch (e) {
+    zustand.laufend.delete(id);
+    zustand.fokusNach = null;
+    roadmapTeileZeichnen();
+    schreibFehler(e);
+  }
+}
+
+function abhaken(eintrag, art) {
+  const id = eintrag.id;
+  const notizSchluessel = `notiz:${id}`;
+  const notiz = art === "punkt" ? String(entwurf(notizSchluessel)).trim() : "";
+  statusSchreiben({
+    id, art, ziel: "x", betreff: `${id} erledigt`,
+    aendern: (p) => {
+      if (p.status === "x") return false;
+      p.status = "x";
+      p.erledigt = heute();
+      p.von = `${ICH.ki}/${ICH.chat}`;
+      if (notiz) p.notiz = p.notiz ? `${p.notiz} · ${notiz}` : notiz;
+      return true;
+    },
+    erfolg: ({ vorher, geaendert }) => {
+      if (notiz) { entwurfSetzen(notizSchluessel, ""); zustand.offen.delete(`notizfeld:${id}`); roadmapTeileZeichnen(); }
+      if (!geaendert) { melden(`${id} war schon erledigt.`); return; }
+      melden(`${id} abgehakt.`, { aktion: { text: "Rückgängig", tun: () => zuruecknehmen(id, art, vorher) } });
+    },
+  });
+}
+
+function wiederOeffnen(eintrag, art) {
+  const id = eintrag.id;
+  statusSchreiben({
+    id, art, ziel: ".", betreff: `${id} wieder offen`,
+    aendern: (p) => {
+      if (p.status !== "x") return false;
+      p.status = ".";
+      delete p.erledigt;
+      delete p.von;
+      return true;
+    },
+    erfolg: ({ vorher, geaendert }) => {
+      if (!geaendert) { melden(`${id} war schon offen.`); return; }
+      melden(`${id} wieder offen.`, { aktion: { text: "Rückgängig", tun: () => zuruecknehmen(id, art, vorher) } });
+    },
+  });
+}
+
+/* Stellt genau die Haken-Felder wieder her, wie sie vor dem Klick waren. */
+function zuruecknehmen(id, art, vorher) {
+  statusSchreiben({
+    id, art, ziel: vorher.status || ".", betreff: `${id} zurückgenommen`,
+    aendern: (p) => {
+      let anders = false;
+      for (const f of HAKEN_FELDER) {
+        const hatte = Object.prototype.hasOwnProperty.call(vorher, f);
+        if (hatte && p[f] !== vorher[f]) { p[f] = vorher[f]; anders = true; }
+        if (!hatte && Object.prototype.hasOwnProperty.call(p, f)) { delete p[f]; anders = true; }
+      }
+      return anders;
+    },
+    erfolg: () => melden(`${id} zurückgenommen.`),
+  });
+}
+
+function hakenKnopf(eintrag, art, klein) {
+  const status = anzeigeStatus(eintrag);
+  const laeuft = zustand.laufend.has(eintrag.id);
+  const fertig = status === "x";
+  const svg = svgEl("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", focusable: "false" });
+  svg.append(
+    svgEl("circle", { class: "haken-ring", cx: 12, cy: 12, r: 9.5 }),
+    svgEl("path", { class: "haken-teil", d: "M8 12h8" }),
+    svgEl("path", { class: "haken-strich", d: "m7.5 12.4 3 3 6-6.4" }),
+  );
+  const knopf = el("button", {
+    type: "button",
+    class: "haken" + (klein ? " klein" : ""),
+    role: "checkbox",
+    "aria-checked": fertig ? "true" : status === "~" ? "mixed" : "false",
+    "aria-label": `${eintrag.id} ${eintrag.titel || ""}`.trim(),
+    "aria-busy": laeuft ? "true" : null,
+    title: laeuft ? "wird gespeichert …" : fertig ? "erledigt · klicken öffnet wieder" : "als erledigt abhaken",
+    "data-fokus": `haken:${eintrag.id}`,
+  }, svg);
+  knopf.addEventListener("click", () => {
+    if (zustand.laufend.has(eintrag.id)) return;
+    if (fertig) wiederOeffnen(eintrag, art); else abhaken(eintrag, art);
+  });
+  return knopf;
+}
 
 /* --- Dein Zug --- */
 
-function zugZeichnen() {
-  const fragen = offeneFragen();
-  const offeneSlugs = new Set(fragen.map((q) => q.thread.slug));
-  const aufgaben = roadmapPunkte().filter(({ punkt }) =>
-    (punkt.wer === "betreiber" || punkt.wer === "betrieb") && punkt.status !== "x"
+function meineAufgaben() {
+  const offeneSlugs = new Set(offeneFragen().map((q) => q.thread.slug));
+  return roadmapPunkte().filter(({ punkt }) => istMeins(punkt)
+    && (punkt.status !== "x" || zustand.laufend.get(punkt.id) === "x")
     && !(punkt.frage && offeneSlugs.has(punkt.frage)));
+}
 
-  const zaehler = $("zaehler-zug");
-  zaehler.textContent = String(fragen.length + aufgaben.length);
-  zaehler.classList.toggle("heiss", fragen.length > 0);
+function zaehlerSetzen() {
+  const fragen = offeneFragen().length;
+  const aufgaben = meineAufgaben().length;
+  const z = $("zaehler-zug");
+  z.textContent = String(fragen + aufgaben);
+  z.classList.toggle("heiss", fragen > 0);
+  z.classList.toggle("leise", fragen + aufgaben === 0);
+  $("zaehler-fragen").textContent = String(fragen);
+  $("zaehler-fragen").classList.toggle("heiss", fragen > 0);
+  $("zaehler-aufgaben").textContent = String(aufgaben);
+  const alle = roadmapPunkte().map((x) => x.punkt);
+  $("zaehler-roadmap").textContent = alle.length ? `${alle.filter((p) => p.status === "x").length}/${alle.length}` : "";
+  $("zaehler-threads").textContent = String(zustand.threads.filter((t) => !t.geschlossen).length);
+  document.title = fragen + aufgaben ? `(${fragen + aufgaben}) ${SEITENTITEL}` : SEITENTITEL;
+}
 
+function fragenZeichnen() {
+  const fragen = offeneFragen();
   const fl = $("fragen-liste");
   fl.replaceChildren();
-  if (!fragen.length) fl.append(el("p", { class: "leer", text: "Keine offene Frage. Die KIs fragen mit: python forum.py frage …" }));
+  if (!fragen.length) fl.append(leer("ok", "Keine offene Frage.", "Die KIs fragen mit: python forum.py frage …"));
   for (const q of fragen) fl.append(frageKarte(q));
+}
+
+function zugRoadmapZeichnen() {
+  const aufgaben = meineAufgaben();
+  lageZeichnen(aufgaben);
 
   const al = $("aufgaben-liste");
   al.replaceChildren();
-  if (!zustand.roadmap) al.append(el("p", { class: "leer", text: "Keine roadmap.json im Forum gefunden." }));
-  else if (!aufgaben.length) al.append(el("p", { class: "leer", text: "Nichts offen, das bei dir liegt." }));
-  for (const a of aufgaben) al.append(aufgabeKarte(a));
+  if (!zustand.roadmap) al.append(leer("info", "Keine roadmap.json im Forum gefunden."));
+  else if (!aufgaben.length) al.append(leer("ok", "Nichts offen, das bei dir liegt.", "Alles abgehakt. Neue Punkte erscheinen hier, sobald eine KI sie in roadmap.json einträgt."));
+  else {
+    const karte = el("div", { class: "karte checkliste-karte", "data-hakenliste": "aufgaben" });
+    let gruppe = null;
+    let liste = null;
+    for (const a of aufgaben) {
+      if (a.meilenstein !== gruppe) {
+        gruppe = a.meilenstein;
+        karte.append(el("div", { class: "gruppe" }, el("span", { class: "gruppe-id", text: gruppe.id }), gruppe.titel));
+        liste = el("ul", { class: "checkliste" });
+        karte.append(liste);
+      }
+      liste.append(aufgabeZeile(a));
+    }
+    al.append(karte);
+  }
+  zuletztZeichnen();
+}
+
+function lageZeichnen(aufgaben) {
+  const box = $("zug-lage");
+  box.replaceChildren();
+  const rm = zustand.roadmap;
+  if (!rm) { box.hidden = true; return; }
+  box.hidden = false;
+  const alle = roadmapPunkte().map((x) => x.punkt);
+  const fertig = alle.filter((p) => p.status === "x").length;
+  const anteil = alle.length ? fertig / alle.length : 0;
+  const fragen = offeneFragen().length;
+  const entscheidungen = aufgaben.filter((a) => a.punkt.wer === "betreiber").length;
+  const handlaeufe = aufgaben.filter((a) => a.punkt.wer === "betrieb").length;
+  const offenBeiDir = fragen + aufgaben.length;
+  box.append(
+    ringBox(anteil, `${fertig} von ${alle.length} Roadmap-Punkten fertig`),
+    el("div", { class: "lage-text" },
+      el("div", { class: "lage-ziel", text: rm.ziel || "Roadmap" }),
+      el("div", { class: "lage-titel" }, offenBeiDir
+        ? `${anzahl(offenBeiDir, "Punkt wartet", "Punkte warten")} auf dich`
+        : "Bei dir ist gerade nichts offen."),
+      el("div", { class: "lage-zeile" },
+        el("span", { class: "marke" + (fragen ? " zug" : " leise") }, icon("rueckfrage"), anzahl(fragen, "Frage", "Fragen")),
+        el("span", { class: "marke" + (entscheidungen ? " zug" : " leise") }, icon("entscheidung"), anzahl(entscheidungen, "Entscheidung", "Entscheidungen")),
+        el("span", { class: "marke" + (handlaeufe ? " zug" : " leise") }, icon("handlauf"), anzahl(handlaeufe, "Handlauf", "Handläufe")),
+        el("span", { class: "marke ok" }, icon("ok"), `${fertig}/${alle.length} fertig`)),
+      rm.kritischer_pfad ? el("p", { class: "lage-pfad" }, icon("roadmap"), el("span", { text: rm.kritischer_pfad })) : null),
+  );
+}
+
+function aufgabeZeile({ punkt }) {
+  const id = punkt.id;
+  const status = anzeigeStatus(punkt);
+  const notizSchluessel = `notiz:${id}`;
+  const feldSchluessel = `notizfeld:${id}`;
+  const notizOffen = zustand.offen.has(feldSchluessel) ? zustand.offen.get(feldSchluessel) : !!entwurf(notizSchluessel);
+  const verweis = punkt.frage || punkt.thread;
+  const t = verweis ? threadZuSlug(verweis) : null;
+
+  let notizFeld = null;
+  if (notizOffen) {
+    notizFeld = el("textarea", {
+      class: "notiz-feld", rows: 2, "data-fokus": `notiztext:${id}`, "aria-label": `Notiz zu ${id}`,
+      placeholder: "Was wurde gemacht, Datum, Protokoll-Pfad … (optional, geht beim Abhaken mit)",
+    });
+    notizFeld.value = entwurf(notizSchluessel);
+    notizFeld.addEventListener("input", () => entwurfSetzen(notizSchluessel, notizFeld.value));
+  }
+  const notizKnopf = el("button", {
+    type: "button", class: "knopf-icon klein" + (notizOffen ? " an" : ""),
+    "aria-expanded": notizOffen ? "true" : "false", "aria-label": `Notiz zu ${id}`,
+    title: "Notiz, die beim Abhaken mitgeschrieben wird", "data-fokus": `notizknopf:${id}`,
+    onclick: () => {
+      zustand.offen.set(feldSchluessel, !notizOffen);
+      roadmapTeileZeichnen(notizOffen ? `notizknopf:${id}` : `notiztext:${id}`);
+    },
+  }, icon("notiz"));
+
+  return el("li", { class: "aufgabe" + (status === "x" ? " ist-fertig" : ""), "data-zeile": id },
+    hakenKnopf(punkt, "punkt"),
+    el("div", { class: "aufgabe-haupt" },
+      el("div", { class: "aufgabe-titel" }, el("span", { class: "kennung", text: id }), " ", punkt.titel),
+      punkt.notiz ? el("p", { class: "aufgabe-notiz", text: punkt.notiz }) : null,
+      t ? threadVerweis(t) : null,
+      notizFeld),
+    el("div", { class: "aufgabe-rechts" },
+      punkt.status === "~" ? el("span", { class: "marke teil", text: "teilweise" }) : null,
+      werMarke(punkt.wer, false),
+      notizKnopf),
+  );
+}
+
+function zuletztZeichnen() {
+  const box = $("zuletzt-box");
+  box.replaceChildren();
+  const fertige = roadmapPunkte()
+    .filter(({ punkt }) => istMeins(punkt) && punkt.status === "x" && punkt.erledigt && zustand.laufend.get(punkt.id) !== "x")
+    .sort((a, b) => String(b.punkt.erledigt).localeCompare(String(a.punkt.erledigt)))
+    .slice(0, 12);
+  if (!fertige.length) return;
+  const details = el("details", { class: "karte zuletzt" },
+    el("summary", {}, icon("ok", "zuletzt-ic"), el("span", { text: "Zuletzt erledigt" }),
+      el("span", { class: "zaehler leise", text: String(fertige.length) }), icon("runter", "chevron")),
+    el("ul", { class: "checkliste", "data-hakenliste": "zuletzt" }, fertige.map(({ meilenstein, punkt }) =>
+      el("li", { class: "aufgabe ist-fertig" + (anzeigeStatus(punkt) === "x" ? "" : " wird-offen"), "data-zeile": punkt.id },
+        hakenKnopf(punkt, "punkt"),
+        el("div", { class: "aufgabe-haupt" },
+          el("div", { class: "aufgabe-titel" }, el("span", { class: "kennung", text: punkt.id }), " ", punkt.titel),
+          el("p", { class: "aufgabe-notiz" }, icon("uhr"),
+            ` ${datumLesbar(punkt.erledigt)}${punkt.von ? " · " + punkt.von : ""} · ${meilenstein.id} ${meilenstein.titel}`)),
+        el("div", { class: "aufgabe-rechts" }, werMarke(punkt.wer, true))))));
+  box.append(aufklappen(details, "zuletzt", false));
 }
 
 function frageKarte({ thread, block, f }) {
+  const schl = `frage:${thread.slug}:${block.zeit}`;
   const name = `wahl-${thread.slug}-${block.zeit}`;
-  const notiz = el("textarea", { placeholder: "Ergänzung, Bedingung oder eigene Antwort (optional)", "aria-label": "Ergänzung" });
   const istErste = thread.bloecke[0] === block;
-  const beschluss = el("input", { type: "checkbox" });
-  beschluss.checked = istErste;
 
-  const optionen = f.vorschlaege.map((v) => el("label", { class: "vorschlag" },
-    el("input", { type: "radio", name, value: v.buchstabe }),
-    el("span", { class: "vorschlag-buchstabe", text: v.buchstabe }),
-    el("span", {}, v.text, v.buchstabe === f.empfohlen ? el("span", { class: "empfohlen", text: "★ empfohlen" }) : null),
-  ));
-  if (f.vorschlaege.length) {
-    optionen.push(el("label", { class: "vorschlag" },
-      el("input", { type: "radio", name, value: "" }),
-      el("span", { class: "vorschlag-buchstabe", text: "–" }),
-      el("span", { text: "Eigene Antwort (im Feld unten)" })));
-  }
+  const notiz = el("textarea", {
+    placeholder: "Ergänzung, Bedingung oder eigene Antwort (optional)", "aria-label": "Ergänzung",
+    rows: 3, "data-fokus": `${schl}:text`,
+  });
+  notiz.value = entwurf(`${schl}:text`);
+  notiz.addEventListener("input", () => entwurfSetzen(`${schl}:text`, notiz.value));
 
-  const senden = el("button", { type: "submit", class: "knopf", text: "Antworten" });
-  const zurueck = el("button", { type: "button", class: "knopf leise", text: "Rückfrage (ZURUECK)" });
+  const beschluss = el("input", { type: "checkbox", class: "schalter", "data-fokus": `${schl}:beschluss` });
+  const gemerkt = entwurf(`${schl}:beschluss`);
+  beschluss.checked = gemerkt ? gemerkt === "ja" : istErste;
+
+  const senden = el("button", { type: "submit", class: "knopf" });
+  const zurueck = el("button", { type: "button", class: "knopf zweit" }, icon("undo"), "Rückfrage");
+  const sendenText = () => senden.replaceChildren(icon(beschluss.checked ? "haken" : "senden"), beschluss.checked ? "Beschließen" : "Antworten");
+  sendenText();
+  beschluss.addEventListener("change", () => {
+    entwurfSetzen(`${schl}:beschluss`, beschluss.checked ? "ja" : "nein");
+    sendenText();
+  });
+
+  const wahl = entwurf(`${schl}:wahl`);
+  const etiketten = [];
+  const markieren = () => { for (const l of etiketten) l.classList.toggle("gewaehlt", l.querySelector("input").checked); };
+  const option = (wert, buchstabe, inhalt, empfohlen) => {
+    const r = el("input", { type: "radio", name, value: wert, class: "vorschlag-radio", "data-fokus": `${schl}:wahl:${wert}` });
+    r.checked = wahl === wert;
+    r.addEventListener("change", () => { entwurfSetzen(`${schl}:wahl`, wert); markieren(); });
+    const l = el("label", { class: "vorschlag" + (empfohlen ? " ist-empfohlen" : "") + (r.checked ? " gewaehlt" : "") },
+      r, el("span", { class: "vorschlag-buchstabe", text: buchstabe }),
+      el("span", { class: "vorschlag-text" }, inhalt,
+        empfohlen ? el("span", { class: "empfohlen" }, icon("stern"), "Empfehlung") : null));
+    etiketten.push(l);
+    return l;
+  };
+  const optionen = f.vorschlaege.map((v) => option(v.buchstabe, v.buchstabe, v.text, v.buchstabe === f.empfohlen));
+  if (f.vorschlaege.length) optionen.push(option("eigen", "–", "Eigene Antwort (im Feld unten)", false));
 
   const form = el("form", { class: "antwort-form" },
     f.vorschlaege.length ? el("fieldset", { class: "vorschlaege" }, el("legend", { text: "Vorschläge" }), optionen) : null,
-    f.empfehlung ? el("p", { class: "empfehlung" }, el("b", { text: "Empfehlung: " }), f.empfehlung) : null,
+    f.empfehlung ? el("p", { class: "empfehlung" }, icon("stern"), el("span", {}, el("b", { text: "Empfehlung: " }), f.empfehlung)) : null,
     notiz,
     el("div", { class: "antwort-zeile" },
-      el("label", { class: "haken" }, beschluss, " als BESCHLUSS (schließt den Thread)"),
+      el("label", { class: "haken-text" }, beschluss, el("span", {}, "als ", el("b", { text: "BESCHLUSS" }), " (schließt den Thread)")),
       el("div", { class: "antwort-knoepfe" }, zurueck, senden)),
   );
 
   const absenden = async (sorte) => {
     const gewaehlt = form.querySelector(`input[name="${CSS.escape(name)}"]:checked`);
-    const buchstabe = gewaehlt ? gewaehlt.value : "";
+    const buchstabe = gewaehlt && gewaehlt.value !== "eigen" ? gewaehlt.value : "";
     const zusatz = notiz.value.trim();
     if (sorte !== "ZURUECK" && f.vorschlaege.length && !gewaehlt) { melden("Bitte einen Vorschlag wählen oder „Eigene Antwort“.", true); return; }
-    if ((sorte === "ZURUECK" || !buchstabe) && !zusatz) { melden("Bitte im Feld schreiben, was du willst.", true); return; }
+    if ((sorte === "ZURUECK" || !buchstabe) && !zusatz) { melden("Bitte im Feld schreiben, was du willst.", true); notiz.focus(); return; }
     const bezug = `Zu FRAGE [${block.ki}/${block.chat}] ${block.zeit}`;
     let text;
     if (sorte === "ZURUECK") {
@@ -436,6 +996,7 @@ function frageKarte({ thread, block, f }) {
     await schreibenMitKnopf([senden, zurueck], async () => {
       await gateSicherstellen();
       const r = await anhaengen(thread.pfad, blockText(sorte, text), `${thread.slug}: ${sorte} [${ICH.ki}/${ICH.chat}]`);
+      entwuerfeLoeschen(schl + ":");
       threadErsetzen(thread.pfad, r.text, r.sha);
       melden(`${sorte} in ${thread.slug} geschrieben.`);
     });
@@ -445,73 +1006,24 @@ function frageKarte({ thread, block, f }) {
 
   return el("article", { class: "karte frage" },
     el("div", { class: "frage-kopf" },
-      el("a", { href: `#t/${encodeURIComponent(thread.slug)}`, class: "meta", text: thread.slug }),
-      el("span", { class: "meta", text: `[${block.ki}/${block.chat}] · ${zeitLesbar(block.zeit)}` })),
+      threadVerweis(thread),
+      el("span", { class: "meta" }, `${block.ki}/${block.chat} · `, el("time", { text: zeitLesbar(block.zeit) }))),
     el("h3", { class: "frage-titel", text: f.frage || thread.titel }),
     f.roadmap.length ? el("div", { class: "marken" }, f.roadmap.map((r) => el("span", { class: "marke", text: r }))) : null,
-    f.kontext ? el("details", { class: "mehr" }, el("summary", { text: "Hintergrund" }), el("p", { class: "kontext", text: f.kontext })) : null,
+    f.kontext ? aufklappen(el("details", { class: "mehr" }, el("summary", {}, icon("runter", "chevron"), "Hintergrund"),
+      el("p", { class: "kontext", text: f.kontext })), `${schl}:hintergrund`, false) : null,
     form,
   );
 }
 
-function aufgabeKarte({ meilenstein, punkt }) {
-  const notiz = el("textarea", { placeholder: "Was wurde gemacht, Datum, Protokoll-Pfad … (optional)", "aria-label": "Notiz" });
-  const knopf = el("button", { type: "submit", class: "knopf klein", text: "als erledigt melden" });
-  const form = el("form", { class: "aufgabe-form" }, notiz, el("div", { class: "antwort-knoepfe" }, knopf));
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    await schreibenMitKnopf([knopf], () => punktErledigt(punkt.id, notiz.value.trim()));
-  });
-  const status = STATUS[punkt.status] || STATUS["."];
-  const verweis = punkt.frage || punkt.thread;
-  return el("article", { class: "karte aufgabe" },
-    el("div", { class: "aufgabe-zeile" },
-      el("span", { class: "aufgabe-titel" }, `${punkt.id} · ${punkt.titel}`),
-      el("span", { class: "marken" },
-        el("span", { class: "marke zug", text: WER[punkt.wer] || punkt.wer }),
-        el("span", { class: `marke ${status[1]}`, text: status[0] }))),
-    el("span", { class: "meta", text: `${meilenstein.id} ${meilenstein.titel}` }),
-    punkt.notiz ? el("span", { class: "meta", text: punkt.notiz }) : null,
-    verweis && threadZuSlug(verweis) ? el("a", { href: `#t/${encodeURIComponent(verweis)}`, class: "meta", text: `→ Thread ${verweis}` }) : null,
-    el("details", { class: "mehr" }, el("summary", { text: "erledigt?" }), form),
-  );
-}
-
-async function punktErledigt(id, notiz) {
-  for (let versuch = 0; versuch < 3; versuch++) {
-    const { text, sha } = await dateiLesen("roadmap.json");
-    const rm = JSON.parse(text);
-    let gefunden = null;
-    for (const m of rm.meilensteine || []) for (const p of m.punkte || []) if (p.id === id) gefunden = p;
-    if (!gefunden) throw new Error(`Punkt ${id} nicht mehr in roadmap.json`);
-    gefunden.status = "x";
-    gefunden.erledigt = heute();
-    gefunden.von = `${ICH.ki}/${ICH.chat}`;
-    if (notiz) gefunden.notiz = gefunden.notiz ? `${gefunden.notiz} · ${notiz}` : notiz;
-    const neu = JSON.stringify(rm, null, 2) + "\n";
-    try {
-      await gateSicherstellen();
-      await dateiSchreiben("roadmap.json", neu, sha, `roadmap: ${id} erledigt [${ICH.ki}/${ICH.chat}]`);
-      zustand.roadmap = rm;
-      allesZeichnen();
-      melden(`${id} als erledigt eingetragen.`);
-      return;
-    } catch (e) {
-      if (!(e instanceof GitHubFehler) || (e.status !== 409 && e.status !== 422) || versuch === 2) throw e;
-    }
-  }
-}
-
 async function schreibenMitKnopf(knoepfe, arbeit) {
-  for (const k of knoepfe) k.disabled = true;
+  for (const k of knoepfe) { k.disabled = true; k.setAttribute("aria-busy", "true"); }
   try {
     await arbeit();
   } catch (e) {
-    const hinweis = e instanceof GitHubFehler && (e.status === 403 || e.status === 404)
-      ? " — hat das Token „Contents: Read and write“ auf CORE-Forum-?" : "";
-    melden("Nicht geschrieben: " + e.message + hinweis, true);
+    schreibFehler(e);
   } finally {
-    for (const k of knoepfe) k.disabled = false;
+    for (const k of knoepfe) { k.disabled = false; k.removeAttribute("aria-busy"); }
   }
 }
 
@@ -519,68 +1031,109 @@ async function schreibenMitKnopf(knoepfe, arbeit) {
 
 function roadmapZeichnen() {
   const rm = zustand.roadmap;
+  const gesamt = $("roadmap-gesamt");
   const ms = $("roadmap-meilensteine");
-  ms.replaceChildren();
-  $("roadmap-gesamt").replaceChildren();
-  $("roadmap-ready").replaceChildren();
+  const readyBox = $("roadmap-ready-box");
+  const extra = $("roadmap-extra");
+  for (const b of [gesamt, ms, readyBox, extra]) b.replaceChildren();
   if (!rm) {
-    ms.append(el("p", { class: "leer", text: "Keine roadmap.json im Forum." }));
+    $("roadmap-stand").textContent = "";
+    ms.append(leer("info", "Keine roadmap.json im Forum."));
     return;
   }
-  $("roadmap-stand").textContent = `Stand ${rm.stand || "?"} · ${rm.basis || ""} · Quelle: ${rm.quelle || "roadmap.json"}`;
+  $("roadmap-stand").textContent = `Stand ${datumLesbar(rm.stand) || "?"} · ${rm.basis || ""} · Quelle: ${rm.quelle || "roadmap.json"}`;
 
   const alle = roadmapPunkte().map((x) => x.punkt);
   const zahl = (f) => alle.filter(f).length;
-  const kennzahlen = [
-    [`${zahl((p) => p.status === "x")}/${alle.length}`, "Punkte fertig"],
-    [String(zahl((p) => p.wer === "betreiber" && p.status !== "x")), "Entscheidungen bei dir"],
-    [String(zahl((p) => p.wer === "betrieb" && p.status !== "x")), "Handläufe bei dir"],
-    [String(offeneFragen().length), "offene Fragen"],
+  const fertig = zahl((p) => p.status === "x");
+  const fragen = offeneFragen().length;
+  const kacheln = [
+    { wert: `${fertig}/${alle.length}`, name: "Punkte fertig", ic: "ok", art: "ok" },
+    { wert: String(zahl((p) => p.wer === "betreiber" && p.status !== "x")), name: "Entscheidungen bei dir", ic: "entscheidung", art: "zug", link: "#zug" },
+    { wert: String(zahl((p) => p.wer === "betrieb" && p.status !== "x")), name: "Handläufe bei dir", ic: "handlauf", art: "zug", link: "#zug" },
+    { wert: String(fragen), name: "offene Fragen", ic: "rueckfrage", art: fragen ? "zug" : "", link: "#zug" },
   ];
-  for (const [wert, name] of kennzahlen) {
-    $("roadmap-gesamt").append(el("div", { class: "kennzahl" },
-      el("div", { class: "kennzahl-wert", text: wert }), el("div", { class: "kennzahl-name", text: name })));
-  }
+  gesamt.append(
+    el("div", { class: "karte rm-kopf" },
+      ringBox(alle.length ? fertig / alle.length : 0, `${fertig} von ${alle.length} Punkten fertig`),
+      el("div", { class: "rm-kopf-text" },
+        el("div", { class: "lage-ziel", text: rm.produkt ? `${rm.produkt} · ${rm.ziel || ""}` : rm.ziel || "Roadmap" }),
+        el("div", { class: "lage-titel", text: `${fertig} von ${alle.length} Punkten fertig` }),
+        rm.kritischer_pfad ? el("p", { class: "lage-pfad" }, icon("roadmap"), el("span", {}, el("b", { text: "Kritischer Pfad: " }), rm.kritischer_pfad)) : null)),
+    el("div", { class: "kennzahlen" }, kacheln.map((k) => el(k.link ? "a" : "div", { class: "karte kennzahl", href: k.link },
+      el("span", { class: `kennzahl-ic ${k.art}`.trim() }, icon(k.ic)),
+      el("span", {}, el("span", { class: "kennzahl-wert", text: k.wert }), el("span", { class: "kennzahl-name", text: k.name }))))),
+  );
 
   const offeneSlugs = new Set(offeneFragen().map((q) => q.thread.slug));
   for (const m of rm.meilensteine || []) {
     const p = m.punkte || [];
     const x = p.filter((q) => q.status === "x").length;
     const t = p.filter((q) => q.status === "~").length;
-    const beiDir = p.filter((q) => (q.wer === "betreiber" || q.wer === "betrieb") && q.status !== "x").length;
+    const beiDir = p.filter((q) => istMeins(q) && q.status !== "x").length;
     const breite = (n) => (p.length ? `${(n / p.length) * 100}%` : "0");
     const f1 = el("div", { class: "f-x" }); f1.style.width = breite(x);
     const f2 = el("div", { class: "f-t" }); f2.style.width = breite(t);
-    const details = el("details", { class: "karte meilenstein" },
+    const stufe = p.length && x === p.length ? "fertig" : x || t ? "teil" : "offen";
+    const details = el("details", { class: `karte meilenstein ms-${stufe}` },
       el("summary", {},
         el("span", { class: "ms-id", text: m.id }),
-        el("span", { class: "ms-titel" }, m.titel, beiDir ? el("span", { class: "marke zug", text: `${beiDir} bei dir` }) : null),
+        el("span", { class: "ms-titel" }, el("span", { text: m.titel }),
+          beiDir ? el("span", { class: "marke zug", text: `${beiDir} bei dir` }) : null,
+          stufe === "fertig" ? el("span", { class: "marke ok" }, icon("haken"), "fertig") : null),
         el("div", { class: "fortschritt", role: "img", "aria-label": `${x} von ${p.length} fertig` }, f1, f2),
-        el("span", { class: "ms-zahl", text: `${x}/${p.length}` })),
-      el("ul", { class: "punkte" }, p.map((q) => {
-        const s = STATUS[q.status] || STATUS["."];
-        const frageOffen = q.frage && offeneSlugs.has(q.frage);
-        return el("li", { class: "punkt" },
-          el("span", { class: `glyphe ${s[2]}`, title: s[0], text: q.status === "x" ? "✓" : q.status === "~" ? "~" : "·" }),
-          el("span", {}, `${q.id} ${q.titel}`,
-            q.notiz ? el("span", { class: "punkt-notiz", text: q.notiz }) : null,
-            q.erledigt ? el("span", { class: "punkt-notiz", text: `erledigt ${q.erledigt}${q.von ? " · " + q.von : ""}` }) : null),
-          el("span", { class: "marken" },
-            frageOffen ? el("a", { class: "marke zug", href: "#zug", text: "Frage offen" }) : null,
-            el("span", { class: `marke ${q.wer === "code" ? "" : q.status === "x" ? "ok" : "zug"}`.trim(), text: WER[q.wer] || q.wer })));
-      })),
+        el("span", { class: "ms-zahl", text: `${x}/${p.length}` }),
+        icon("runter", "chevron")),
+      el("ul", { class: "checkliste punkte", "data-hakenliste": `ms-${m.id}` }, p.map((q) => punktZeile(q, offeneSlugs))),
     );
-    details.open = beiDir > 0;
-    ms.append(details);
+    ms.append(aufklappen(details, `ms:${m.id}`, beiDir > 0));
   }
 
-  for (const r of rm.ready || []) {
-    const s = STATUS[r.status] || STATUS["."];
-    $("roadmap-ready").append(el("div", { class: "ready-zeile" },
-      el("span", { class: "ms-id", text: r.id }),
-      el("span", { class: `glyphe ${s[2]}`, title: s[0], text: r.status === "x" ? "✓" : r.status === "~" ? "~" : "·" }),
-      el("span", {}, r.titel, r.fehlt && r.status !== "x" ? el("span", { class: "fehlt", text: `fehlt: ${r.fehlt}` }) : null)));
+  if ((rm.ready || []).length) {
+    const r = rm.ready;
+    const rFertig = r.filter((q) => q.status === "x").length;
+    readyBox.append(
+      el("div", { class: "abschnitt-kopf" },
+        el("h2", {}, icon("ready"), "„Ready“ für 0.9.0b1", el("span", { class: "zaehler leise", text: `${rFertig}/${r.length}` })),
+        el("p", { class: "hinweis", text: "Die Eintrittskarten für die Beta. Auch hier: Kreis anklicken = erfüllt." })),
+      el("div", { class: "ready", "data-hakenliste": "ready" }, r.map((q) => {
+        const s = anzeigeStatus(q);
+        return el("div", { class: "karte ready-kachel" + (s === "x" ? " ist-fertig" : ""), "data-zeile": q.id },
+          hakenKnopf(q, "ready", true),
+          el("div", {},
+            el("div", { class: "ready-titel" }, el("span", { class: "kennung", text: q.id }), " ", q.titel),
+            q.fehlt && q.status !== "x" ? el("p", { class: "fehlt" }, el("b", { text: "fehlt: " }), q.fehlt) : null));
+      })),
+    );
   }
+
+  if ((rm.risiken || []).length) {
+    extra.append(el("div", { class: "abschnitt-kopf" }, el("h2", {}, icon("warnung"), "Risiken")),
+      el("ul", { class: "karte risiken" }, rm.risiken.map((r) => el("li", {}, icon("warnung"), el("span", { text: r })))));
+  }
+  if ((rm.nicht_vor_ready || []).length) {
+    extra.append(el("div", { class: "abschnitt-kopf" }, el("h2", {}, icon("pause"), "Nicht vor „Ready“"),
+      el("p", { class: "hinweis", text: "Bewusst geparkt, bis 0.9.0b1 steht." })),
+      el("div", { class: "marken park" }, rm.nicht_vor_ready.map((r) => el("span", { class: "marke leise", text: r }))));
+  }
+}
+
+function punktZeile(q, offeneSlugs) {
+  const status = anzeigeStatus(q);
+  const frageOffen = q.frage && offeneSlugs.has(q.frage);
+  const verweis = q.frage || q.thread;
+  const t = verweis ? threadZuSlug(verweis) : null;
+  return el("li", { class: "punkt" + (status === "x" ? " ist-fertig" : ""), "data-zeile": q.id },
+    hakenKnopf(q, "punkt", true),
+    el("div", { class: "punkt-haupt" },
+      el("div", { class: "punkt-titel" }, el("span", { class: "kennung", text: q.id }), " ", q.titel),
+      q.notiz ? el("p", { class: "punkt-notiz", text: q.notiz }) : null,
+      q.erledigt ? el("p", { class: "punkt-notiz" }, icon("uhr"), ` erledigt ${datumLesbar(q.erledigt)}${q.von ? " · " + q.von : ""}`) : null),
+    el("div", { class: "punkt-rechts" },
+      frageOffen ? el("a", { class: "marke zug", href: "#zug" }, icon("rueckfrage"), "Frage offen") : null,
+      t ? threadVerweis(t, true) : null,
+      werMarke(q.wer, q.status === "x")),
+  );
 }
 
 /* --- Threads --- */
@@ -593,15 +1146,17 @@ function threadListeZeichnen() {
   const treffer = zustand.threads.filter((t) =>
     (!nurOffene || !t.geschlossen || t.offen.length)
     && (!suche || (t.slug + " " + t.titel).toLowerCase().includes(suche)));
-  if (!treffer.length) liste.append(el("p", { class: "leer", text: "Kein Thread passt." }));
+  $("thread-anzahl").textContent = anzahl(treffer.length, "Thread", "Threads");
+  if (!treffer.length) liste.append(leer("suche", "Kein Thread passt.", nurOffene ? "„nur offene“ abschalten zeigt auch geschlossene." : null));
   for (const t of treffer) {
     const l = t.letzter;
-    liste.append(el("a", { class: "thread-zeile", href: `#t/${encodeURIComponent(t.slug)}` },
+    liste.append(el("a", { class: "thread-zeile" + (t.offen.length ? " hat-frage" : "") + (t.geschlossen ? " ist-zu" : ""), href: `#t/${encodeURIComponent(t.slug)}` },
       el("span", { class: "thread-nr", text: t.nummer || "–" }),
-      el("span", { class: "thread-titel" }, t.titel,
-        el("span", { class: "thread-letzt", text: l ? `zuletzt ${l.sorte} · [${l.ki}/${l.chat}] · ${zeitLesbar(l.zeit)}` : (t.kopf.Aktualisiert ? `Archiv · ${t.kopf.Aktualisiert.slice(0, 10)}` : "Archiv") })),
+      el("span", { class: "thread-haupt" },
+        el("span", { class: "thread-titel", text: t.titel }),
+        el("span", { class: "thread-letzt", text: l ? `zuletzt ${l.sorte} · ${l.ki}/${l.chat} · ${zeitLesbar(l.zeit)}` : (t.kopf.Aktualisiert ? `Archiv · ${t.kopf.Aktualisiert.slice(0, 10)}` : "Archiv") })),
       el("span", { class: "thread-rechts" },
-        t.offen.length ? el("span", { class: "marke zug", text: "Frage an dich" }) : null,
+        t.offen.length ? el("span", { class: "marke zug" }, icon("rueckfrage"), "Frage an dich") : null,
         t.art ? el("span", { class: "marke", text: t.art }) : null,
         el("span", { class: `marke ${t.geschlossen ? "ok" : "offen"}`, text: t.geschlossen ? "geschlossen" : "offen" }))));
   }
@@ -612,58 +1167,105 @@ function textBlock(text) {
   return el("pre", { class: "text" + (breit ? " breit" : ""), text });
 }
 
+function avatarKlasse(ki) {
+  if (ki === ICH.ki) return "av-ich";
+  let h = 0;
+  for (const c of ki) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return `av-${h % 6}`;
+}
+function sorteMarke(sorte) {
+  const art = sorte === "FRAGE" ? "zug"
+    : sorte === "BESCHLUSS" || sorte === "ANTWORT" || sorte === "ZUSTIMMUNG" ? "ok"
+      : sorte === "EINWAND" || sorte === "ZURUECK" ? "teil" : "";
+  return el("span", { class: `marke ${art}`.trim(), text: sorte });
+}
+
 function threadDetailZeichnen(slug) {
   const ziel = $("thread-detail");
   ziel.replaceChildren();
   const t = threadZuSlug(slug);
-  if (!t) { ziel.append(el("p", { class: "leer", text: `Thread ${slug} nicht gefunden.` })); return; }
+  if (!t) { ziel.append(leer("suche", `Thread ${slug} nicht gefunden.`)); return; }
 
   const kopfzeilen = el("dl", { class: "kopfzeilen" });
   for (const [k, v] of Object.entries(t.kopf)) {
     if (k === "Titel") continue;
     kopfzeilen.append(el("dt", { text: k }), el("dd", { text: v }));
   }
-  ziel.append(el("div", { class: "karte thread-kopf" }, el("h2", { text: t.titel }), kopfzeilen));
+  ziel.append(el("div", { class: "karte thread-kopf" },
+    el("div", { class: "thread-kopf-zeile" },
+      el("span", { class: "thread-nr", text: t.nummer || "–" }),
+      el("h2", { text: t.titel }),
+      el("span", { class: `marke ${t.geschlossen ? "ok" : "offen"}`, text: t.geschlossen ? "geschlossen" : "offen" })),
+    kopfzeilen));
 
   if (t.vorgeschichte) {
     const d = el("details", { class: "karte mehr" },
-      el("summary", { text: t.bloecke.length ? "Vorgeschichte (Archiv aus bsvp-forum-zugang)" : "Inhalt (Archiv aus bsvp-forum-zugang)" }),
+      el("summary", {}, icon("runter", "chevron"), t.bloecke.length ? "Vorgeschichte (Archiv aus bsvp-forum-zugang)" : "Inhalt (Archiv aus bsvp-forum-zugang)"),
       textBlock(t.vorgeschichte));
-    d.open = !t.bloecke.length;
-    ziel.append(d);
+    ziel.append(aufklappen(d, `vorgeschichte:${t.slug}`, !t.bloecke.length));
   }
-  for (const b of t.bloecke) {
-    ziel.append(el("article", { class: `karte block s-${b.sorte}` },
-      el("div", { class: "block-kopf" },
-        el("span", { class: "block-sig", text: `[${b.ki}/${b.chat}]` }),
-        el("span", { class: `marke ${b.sorte === "FRAGE" ? "zug" : b.sorte === "BESCHLUSS" || b.sorte === "ANTWORT" ? "ok" : ""}`.trim(), text: b.sorte }),
-        el("span", { class: "meta", text: zeitLesbar(b.zeit) })),
-      textBlock(b.text)));
+  if (t.bloecke.length) {
+    ziel.append(el("div", { class: "verlauf" }, t.bloecke.map((b) =>
+      el("article", { class: `block s-${b.sorte}` },
+        el("span", { class: `block-avatar ${avatarKlasse(b.ki)}`, "aria-hidden": "true", text: b.ki.slice(0, 1).toUpperCase() }),
+        el("div", { class: "karte block-inhalt" },
+          el("div", { class: "block-kopf" },
+            el("span", { class: "block-sig", text: `${b.ki}/${b.chat}` }),
+            sorteMarke(b.sorte),
+            el("time", { class: "meta", text: zeitLesbar(b.zeit) })),
+          textBlock(b.text))))));
   }
   for (const q of offeneFragen().filter((x) => x.thread === t)) ziel.append(frageKarte(q));
   ziel.append(beitragForm(t));
 }
 
 function beitragForm(t) {
-  const sorte = el("select", { "aria-label": "Sorte" },
+  const schl = `beitrag:${t.slug}`;
+  const sorte = el("select", { "aria-label": "Sorte", "data-fokus": `${schl}:sorte` },
     ["BEFUND", "ANTWORT", "ANTRAG", "EINWAND", "ZUSTIMMUNG", "ZURUECK", "BESCHLUSS"].map((s) => el("option", { value: s, text: s })));
-  const text = el("textarea", { placeholder: "Dein Beitrag …", "aria-label": "Beitrag", required: true });
-  const knopf = el("button", { type: "submit", class: "knopf", text: "Anhängen" });
-  const form = el("form", { class: "karte antwort-form" },
-    el("h3", { text: "Beitrag als betreiber/dashboard" }),
+  if (entwurf(`${schl}:sorte`)) sorte.value = entwurf(`${schl}:sorte`);
+  sorte.addEventListener("change", () => entwurfSetzen(`${schl}:sorte`, sorte.value));
+  const text = el("textarea", { placeholder: "Dein Beitrag …", "aria-label": "Beitrag", required: true, rows: 4, "data-fokus": `${schl}:text` });
+  text.value = entwurf(`${schl}:text`);
+  text.addEventListener("input", () => entwurfSetzen(`${schl}:text`, text.value));
+  const knopf = el("button", { type: "submit", class: "knopf" }, icon("senden"), "Anhängen");
+  const form = el("form", { class: "karte antwort-form beitrag" },
+    el("h3", {}, icon("notiz"), "Beitrag als betreiber/dashboard"),
     el("p", { class: "hinweis", text: "Wird unten an die Datei angehängt. BESCHLUSS schließt den Thread." }),
-    sorte, text, el("div", { class: "antwort-knoepfe" }, knopf));
+    el("div", { class: "beitrag-zeile" }, sorte), text, el("div", { class: "antwort-knoepfe" }, knopf));
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!text.value.trim()) return;
     await schreibenMitKnopf([knopf], async () => {
       await gateSicherstellen();
       const r = await anhaengen(t.pfad, blockText(sorte.value, text.value), `${t.slug}: ${sorte.value} [${ICH.ki}/${ICH.chat}]`);
+      entwuerfeLoeschen(schl + ":");
+      const geschrieben = sorte.value;
       threadErsetzen(t.pfad, r.text, r.sha);
-      melden(`${sorte.value} in ${t.slug} geschrieben.`);
+      melden(`${geschrieben} in ${t.slug} geschrieben.`);
     });
   });
   return form;
+}
+
+/* ---------- Farbschema ---------- */
+
+const THEMEN = [
+  { wert: "auto", name: "wie das System", ic: "auto" },
+  { wert: "hell", name: "hell", ic: "sonne" },
+  { wert: "dunkel", name: "dunkel", ic: "mond" },
+];
+let thema = (() => { try { return localStorage.getItem(THEMA_SCHLUESSEL) || "auto"; } catch (_) { return "auto"; } })();
+function themaAnwenden() {
+  const root = document.documentElement;
+  if (thema === "hell") root.setAttribute("data-theme", "light");
+  else if (thema === "dunkel") root.setAttribute("data-theme", "dark");
+  else root.removeAttribute("data-theme");
+  const t = THEMEN.find((x) => x.wert === thema) || THEMEN[0];
+  const k = $("thema");
+  k.replaceChildren(icon(t.ic));
+  k.setAttribute("aria-label", `Farbschema: ${t.name} (klicken zum Wechseln)`);
+  k.title = `Farbschema: ${t.name}`;
 }
 
 /* ---------- Start ---------- */
@@ -681,6 +1283,8 @@ async function starten() {
         : `Kein Zugriff auf ${OWNER}/${REPO}${ZWEIG !== "main" ? " (Zweig " + ZWEIG + ")" : ""}: ${e.message}`;
       f.hidden = false;
       zeigen("anmeldung");
+    } else if (hatDaten()) {
+      melden("Neu laden fehlgeschlagen: " + e.message, true);
     } else {
       zeigen("anmeldung");
       melden("Laden fehlgeschlagen: " + e.message, true);
@@ -688,11 +1292,27 @@ async function starten() {
   }
 }
 
+for (const e of document.querySelectorAll("[data-icon]")) {
+  const ic = icon(e.dataset.icon);
+  if (e.tagName === "SPAN" && !e.childNodes.length) e.replaceWith(ic); else e.prepend(ic);
+}
+for (const e of document.querySelectorAll("[data-icon-nach]")) e.append(icon(e.dataset.iconNach));
+themaAnwenden();
+
+$("thema").addEventListener("click", () => {
+  const i = THEMEN.findIndex((x) => x.wert === thema);
+  thema = THEMEN[(i + 1) % THEMEN.length].wert;
+  try {
+    if (thema === "auto") localStorage.removeItem(THEMA_SCHLUESSEL); else localStorage.setItem(THEMA_SCHLUESSEL, thema);
+  } catch (_) { /* gesperrt: gilt nur bis zum Neuladen */ }
+  themaAnwenden();
+});
 $("token-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const wert = $("token-eingabe").value.trim();
   if (!wert) return;
   zustand.token = wert;
+  zustand.gateOk = false;
   speicherSchreiben(TOKEN_SCHLUESSEL, wert, $("token-merken").checked);
   $("token-eingabe").value = "";
   $("anmeldung-fehler").hidden = true;
@@ -700,16 +1320,40 @@ $("token-form").addEventListener("submit", (e) => {
 });
 $("abmelden").addEventListener("click", () => {
   speicherLoeschen(TOKEN_SCHLUESSEL);
+  speicherLoeschen(ENTWURF_SCHLUESSEL);
+  for (const k of Object.keys(entwuerfe)) delete entwuerfe[k];
   zustand.token = "";
   zustand.threads = [];
   zustand.roadmap = null;
-  for (const id of ["verbindung", "neu-laden", "abmelden", "reiter"]) $(id).hidden = true;
+  zustand.gateOk = false;
+  document.title = SEITENTITEL;
+  $("kopf-unter").textContent = "CORE-Forum · Roadmap 0.9.0b1 → 1.0";
+  for (const id of ["verbindung", "neu-laden", "abmelden", "reiter", "fuss"]) $(id).hidden = true;
+  meldungZu();
   zeigen("anmeldung");
 });
 $("neu-laden").addEventListener("click", () => starten());
 $("thread-suche").addEventListener("input", threadListeZeichnen);
 $("nur-offene").addEventListener("change", threadListeZeichnen);
 window.addEventListener("hashchange", () => { route(); window.scrollTo(0, 0); });
+
+const meldung = $("meldung");
+meldung.addEventListener("mouseenter", () => clearTimeout(meldungTimer));
+meldung.addEventListener("focusin", () => clearTimeout(meldungTimer));
+meldung.addEventListener("mouseleave", () => { if (!meldung.contains(document.activeElement)) meldungSpaeterZu(4000); });
+meldung.addEventListener("focusout", (e) => { if (!meldung.contains(e.relatedTarget)) meldungSpaeterZu(4000); });
+
+/* „/“ springt in die Thread-Suche, Esc schließt die Meldung. */
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !meldung.hidden) { meldungZu(); return; }
+  if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+  const z = e.target;
+  if (z && (z.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(z.tagName))) return;
+  if (!zustand.token || !hatDaten()) return;
+  e.preventDefault();
+  if (location.hash !== "#threads") { location.hash = "#threads"; route(); }
+  $("thread-suche").focus();
+});
 
 zustand.token = speicherLesen(TOKEN_SCHLUESSEL);
 if (zustand.token) starten(); else zeigen("anmeldung");
