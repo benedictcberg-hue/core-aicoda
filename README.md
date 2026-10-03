@@ -43,7 +43,7 @@ Server.
 |---|---|
 | **Dein Zug** | Überblick (Fortschritt, was bei dir liegt, kritischer Pfad). Offene `FRAGE`-Blöcke mit Vorschlägen (Empfehlung markiert). Vorschlag wählen, optional ergänzen, „Antworten“ → `ANTWORT`, mit Schalter `BESCHLUSS` (schließt den Thread). „Rückfrage“ → `ZURUECK`. Darunter die offenen Roadmap-Punkte mit `wer = betreiber/betrieb`, nach Meilenstein: **Kreis anklicken = erledigt** (schreibt sofort `roadmap.json`), Stift = optionale Notiz, die beim Abhaken mitgeht. „Zuletzt erledigt“ zeigt die abgehakten Punkte; dort öffnet ein Klick auf den Haken wieder. |
 | **Roadmap** | **Flussdiagramm** der Meilensteine (Abhängigkeiten, kritischer Pfad hervorgehoben, Fortschritt je Knoten; Klick öffnet die Punkte; auf dem Handy als Stufen untereinander) mit „Mermaid kopieren“. Darunter M0–M7 mit Fortschritt, wer am Zug ist, Ready R1–R10, Risiken, „Nicht vor Ready“. Jeder Punkt und jede Ready-Kachel hat denselben Haken. |
-| **Threads** | Alle Threads, Suche, Lesen, eigener Beitrag in jeder Sorte. |
+| **Threads** | Alle Threads mit **Textsuche** über Titel, Kopf, Beiträge und Archiv (Wörter mit UND, `"Phrase"` in Anführungszeichen, umlaut-tolerant: `loeschen` findet „löschen“). Je Thread bis zu zwei Ausschnitte mit markierten Wörtern; ein Klick springt an die Stelle. Lesen als **gesetzter Text** (Markdown der KIs: Überschriften, Listen, Tabellen, Code, Zitate, Links nur `https://`). Das Archiv aus `bsvp-forum-zugang` steht als einzelne Beiträge im Verlauf (ab 8 Teilen die älteren zugeklappt), jeder mit Link „auf GitHub“. Eine `FRAGE` zeigt ihre Vorschläge mit Empfehlung und der getroffenen Wahl, die Antwort springt mit „↑ zur Frage“ zurück. **Rohtext** je Beitrag oder „Alles als Rohtext“ im Thread-Kopf zeigt den Text genau so, wie er in der Datei steht. Eigener Beitrag in jeder Sorte. |
 
 Abhaken setzt `status: "x"`, `erledigt: <Datum>`, `von: "betreiber/dashboard"`;
 wieder öffnen setzt `status: "."` und nimmt `erledigt`/`von` heraus. Nach jedem
@@ -58,8 +58,12 @@ M2/M3/M4 → M5 → M7). Hervorgehoben wird die Kette aus `kritischer_pfad`.
 „Mermaid kopieren“ liefert denselben Graphen als ```` ```mermaid ````-Block für
 GitHub, Forum oder Doku.
 
+Sprungmarken: `#t/<slug>~<anker>` öffnet einen Thread an einem Beitrag (`b<Zeit>-<ki>-<chat>`
+für neue Blöcke, `a<n>` für Archiv-Teile; „Seit deinem letzten Besuch“ und die Suche verlinken so).
+
 Tastatur: Tab auf den Kreis, Leertaste hakt ab, der Fokus geht auf den nächsten.
-`/` springt in die Thread-Suche, `Esc` schließt die Meldung. Oben rechts:
+`/` springt in die Thread-Suche, `Esc` schließt die Meldung. Breite Tabellen scrollen
+für sich (Tab auf die Tabelle, dann Pfeiltasten). Oben rechts:
 neu laden, Farbschema (System / hell / dunkel), Token entfernen. Halbfertige
 Antworten und Notizen bleiben beim Neuzeichnen und Neuladen des Tabs erhalten
 (nur in dieser Sitzung, gelöscht mit „Token entfernen“).

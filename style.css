@@ -739,6 +739,121 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
 .beitrag h3 { display: flex; align-items: center; gap: 8px; font-size: 1rem; }
 .beitrag-zeile select { width: auto; min-width: 200px; }
 
+/* ---------- Lesemodus ---------- */
+
+.lesetext { font: 1rem/1.6 var(--sans); overflow-wrap: anywhere; margin-top: 8px; }
+/* 72 Zeichen je Zeile für Fließtext; Tabellen und Monospace dürfen die Breite nutzen */
+.lesetext > :not(.tabelle):not(pre) { max-width: 72ch; }
+.lesetext > :first-child { margin-top: 0; }
+.lesetext > :last-child { margin-bottom: 0; }
+.lesetext p { margin: 0 0 0.75em; }
+.lesetext h3 { font-size: 1.12rem; margin: 1.3em 0 0.45em; line-height: 1.35; }
+.lesetext h4 { font-size: 1rem; margin: 1.15em 0 0.4em; line-height: 1.35; }
+.lesetext ul, .lesetext ol { margin: 0 0 0.75em; padding-left: 1.5em; }
+.lesetext li + li { margin-top: 0.25em; }
+.lesetext li > ul, .lesetext li > ol { margin: 0.25em 0 0; }
+.lesetext li > p { margin: 0.25em 0 0; }
+.lesetext blockquote { margin: 0 0 0.75em; padding: 2px 0 2px 14px; border-left: 3px solid var(--linie-stark); color: var(--text-leise); }
+.lesetext hr { border: 0; border-top: 1px solid var(--linie); margin: 1.2em 0; }
+.lesetext code { font-family: var(--mono); font-size: 0.9em; background: var(--flaeche-2); }
+.lesetext .text { margin: 0 0 0.9em; padding: 10px 12px; background: var(--flaeche-2); border: 1px solid var(--linie); border-radius: 10px; }
+.lesetext .text:last-child { margin-bottom: 0; }
+.lesetext a { overflow-wrap: anywhere; }
+
+.tabelle { overflow-x: auto; margin: 0 0 0.9em; border: 1px solid var(--linie); border-radius: 10px; max-width: 100%; }
+.tabelle table { border-collapse: collapse; font-size: 0.92rem; line-height: 1.45; }
+.tabelle th, .tabelle td {
+  padding: 6px 10px; text-align: left; vertical-align: top; overflow-wrap: break-word;
+  min-width: 7ch; max-width: 48ch; border-right: 1px solid var(--linie); border-bottom: 1px solid var(--linie);
+}
+.tabelle tr > :last-child { border-right: 0; }
+.tabelle tbody tr:last-child > * { border-bottom: 0; }
+.tabelle thead th { background: var(--flaeche-2); font-weight: 650; }
+.tabelle .rechts { text-align: right; }
+.tabelle .mitte { text-align: center; }
+
+mark { background: var(--teil-hell); color: inherit; border-radius: 3px; padding: 0 1px; box-shadow: inset 0 -2px 0 var(--teil); }
+
+.block-kopf { min-height: 26px; }
+.block-werkzeug { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.block-quelle { font-size: 0.8rem; font-weight: 600; }
+.roh-knopf {
+  appearance: none; display: inline-flex; align-items: center; gap: 4px; min-height: 26px;
+  padding: 2px 9px; border: 1px solid var(--linie); border-radius: 99px; background: transparent;
+  color: var(--text-leise); font: inherit; font-size: 0.76rem; font-weight: 650; cursor: pointer;
+}
+.roh-knopf .ic { width: 1em; height: 1em; }
+.roh-knopf:hover { color: var(--text); border-color: var(--linie-stark); }
+.roh-knopf[aria-pressed="true"] { background: var(--akzent-hell); color: var(--akzent); border-color: transparent; }
+.block-text > .text { margin-top: 10px; }
+.block-untertitel { font-weight: 600; }
+.s-archiv .block-inhalt { border-left-color: var(--linie); }
+.s-archiv .block-avatar { box-shadow: 0 0 0 4px var(--grund), inset 0 0 0 2px rgba(255, 255, 255, 0.35); }
+.lese-leiste { display: flex; justify-content: flex-end; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--linie); }
+
+.aeltere > summary {
+  position: relative; display: grid; grid-template-columns: 36px auto; gap: 12px; align-items: center;
+  width: max-content; max-width: 100%; color: var(--text-leise); font-weight: 650; font-size: 0.9rem;
+}
+.aeltere > summary:hover { color: var(--text); }
+.aeltere-punkt {
+  display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%;
+  background: var(--flaeche); border: 1px solid var(--linie-stark); box-shadow: 0 0 0 4px var(--grund);
+}
+.aeltere > summary .chevron { transform: rotate(0deg); }
+.aeltere[open] > summary .chevron { transform: rotate(180deg); }
+.aeltere .wenn-offen, .aeltere[open] .wenn-zu { display: none; }
+.aeltere[open] .wenn-offen { display: inline; }
+.aeltere-liste { display: grid; gap: 14px; margin-top: 14px; }
+
+.frage-lese-titel { font-size: 1.08rem; margin: 2px 0 6px; }
+.frage-lese .marken { margin: 8px 0 0; }
+.vorschlaege-lese { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
+.lesetext .vorschlaege-lese { padding-left: 0; }
+.vorschlag-lese {
+  display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; align-items: start;
+  padding: 8px 12px; border: 1px solid var(--linie); border-radius: 10px; font-size: 0.95rem; line-height: 1.5;
+}
+.lesetext li.vorschlag-lese + li { margin-top: 0; }
+.vorschlag-lese .vorschlag-buchstabe { width: 28px; height: 28px; font-size: 0.85rem; }
+.vorschlag-lese .vorschlag-text { padding-top: 2px; }
+.vorschlag-marken { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 8px; vertical-align: 1px; }
+.vorschlag-marken .empfohlen { margin-left: 0; vertical-align: 0; }
+.vorschlag-lese.ist-gewaehlt { border-color: var(--ok-voll); box-shadow: inset 0 0 0 1px var(--ok-voll); }
+.vorschlag-lese.ist-gewaehlt .vorschlag-buchstabe { background: var(--ok-voll); border-color: var(--ok-voll); color: #fff; }
+.frage-offen {
+  display: flex; gap: 8px; align-items: flex-start; margin: 12px 0 0; padding: 9px 12px;
+  border-radius: 10px; background: var(--zug-hell); font-size: 0.94rem;
+}
+.frage-offen > .ic { color: var(--zug); margin-top: 0.2em; vertical-align: 0; }
+.frage-lese .empfehlung { margin-top: 10px; }
+.wahl-eigen { display: flex; gap: 8px; align-items: center; margin: 8px 0 0; color: var(--text-leise); }
+.frage-bezug { margin: 10px 0 0; font-size: 0.88rem; }
+.antwort-lese > .frage-bezug:first-child { margin-top: 0; }
+.wahl { margin: 6px 0 0; }
+.angaben { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 14px; margin: 8px 0 0; font-size: 0.94rem; }
+.angaben dt { color: var(--text-leise); }
+.angaben dd { margin: 0; overflow-wrap: anywhere; }
+.mono { font-family: var(--mono); font-size: 0.92em; }
+.frage[tabindex="-1"]:focus { outline: none; }
+.frage.ist-ziel { outline: 3px solid var(--akzent); outline-offset: 2px; }
+
+.thread-treffer { display: grid; }
+.treffer-stellen { list-style: none; margin: 2px 0 6px; padding: 0 0 0 calc(3.2em + 26px); display: grid; gap: 1px; }
+.treffer-stelle {
+  display: block; padding: 5px 10px; border-radius: 8px; color: var(--text); text-decoration: none;
+  font-size: 0.86rem; line-height: 1.45; overflow-wrap: anywhere;
+}
+.treffer-stelle:hover { color: var(--text); background: var(--flaeche-3); }
+.treffer-stelle:hover .treffer-text { text-decoration: underline; text-decoration-color: var(--linie-stark); }
+.treffer-wo { font-family: var(--mono); font-size: 0.76rem; color: var(--text-leise); }
+.treffer-zu { display: flex; gap: 8px; align-items: center; margin: 0; color: var(--text-leise); font-size: 0.9rem; }
+.knopf-link {
+  appearance: none; border: 0; background: none; padding: 0; font: inherit; font-weight: 650;
+  color: var(--akzent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.knopf-link:hover { color: var(--akzent-stark); }
+
 /* ---------- Fuß und Meldung ---------- */
 
 .fuss {
@@ -812,6 +927,13 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
   .punkt-rechts { grid-column: 2; justify-content: flex-start; padding-top: 4px; }
   .thread-zeile { grid-template-columns: 2.8em minmax(0, 1fr); }
   .thread-rechts { grid-column: 2; justify-content: flex-start; }
+  .treffer-stellen { padding-left: 12px; }
+  .block { grid-template-columns: 28px minmax(0, 1fr); gap: 8px; }
+  .block-avatar, .aeltere-punkt { width: 28px; height: 28px; font-size: 0.8rem; }
+  .verlauf::before { left: 13px; }
+  .aeltere > summary { grid-template-columns: 28px auto; gap: 8px; }
+  .lesetext { font-size: 0.97rem; }
+  .lesetext ul, .lesetext ol { padding-left: 1.25em; }
   .antwort-knoepfe { width: 100%; }
   .antwort-knoepfe .knopf { flex: 1; }
   .beitrag-zeile select { width: 100%; }
@@ -837,6 +959,10 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
   .schalter::before { background: CanvasText; }
   .schalter:checked { background: Highlight; }
   .vorschlag.gewaehlt { outline: 2px solid Highlight; }
+  .vorschlag-lese.ist-gewaehlt { outline: 2px solid Highlight; }
+  mark { forced-color-adjust: none; background: Highlight; color: HighlightText; box-shadow: none; }
+  .roh-knopf[aria-pressed="true"] { outline: 2px solid Highlight; }
+  .frage.ist-ziel, .block.ist-ziel .block-inhalt { outline-color: Highlight; }
   .fluss-kante, .fluss-kante.kritisch, .fluss-kante.fertig { stroke: CanvasText; }
   .fluss-spitze, .fluss-spitze.kritisch, .fluss-spitze.fertig { fill: CanvasText; }
   .fluss-stufe + .fluss-stufe::before { background: CanvasText; }
