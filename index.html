@@ -6,32 +6,47 @@
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; connect-src https://api.github.com; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="light dark">
   <title>CORE Betreiber-Pult</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23264b6e'/%3E%3Cpath d='M9 10h14M9 16h10M9 22h6' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232b5f9e'/%3E%3Cpath d='M9 10h14M9 16h8M9 22h4' stroke='%23fff' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='m17 22 3 3 5-6' fill='none' stroke='%236fd39b' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
+  <script src="thema.js"></script>
 </head>
 <body>
   <header class="kopf">
-    <div class="kopf-titel">
-      <h1>CORE Betreiber-Pult</h1>
-      <p class="kopf-unter" id="kopf-unter">CORE-Forum · Roadmap 0.9.0b1 → 1.0</p>
+    <div class="kopf-innen">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+        <rect class="logo-grund" width="32" height="32" rx="8"/>
+        <path class="logo-strich" d="M9 10h14M9 16h8M9 22h4"/>
+        <path class="logo-haken" d="m17 22 3 3 5-6"/>
+      </svg>
+      <div class="kopf-titel">
+        <h1>CORE Betreiber-Pult</h1>
+        <p class="kopf-unter" id="kopf-unter">CORE-Forum · Roadmap 0.9.0b1 → 1.0</p>
+      </div>
+      <div class="kopf-aktionen">
+        <span class="pille" id="verbindung" hidden></span>
+        <button type="button" class="knopf-icon" id="neu-laden" data-icon="neu" aria-label="Neu laden" title="Neu laden" hidden></button>
+        <button type="button" class="knopf-icon" id="thema" aria-label="Farbschema wechseln" title="Farbschema wechseln"></button>
+        <button type="button" class="knopf-icon" id="abmelden" data-icon="abmelden" aria-label="Token entfernen" title="Token entfernen" hidden></button>
+      </div>
     </div>
-    <div class="kopf-aktionen">
-      <span class="pille" id="verbindung" hidden></span>
-      <button type="button" class="knopf leise" id="neu-laden" hidden>Neu laden</button>
-      <button type="button" class="knopf leise" id="abmelden" hidden>Token entfernen</button>
-    </div>
+    <nav class="reiter" id="reiter" aria-label="Ansichten" hidden>
+      <a href="#zug" data-reiter="zug"><span data-icon="zug"></span>Dein Zug <span class="zaehler" id="zaehler-zug">0</span></a>
+      <a href="#roadmap" data-reiter="roadmap"><span data-icon="roadmap"></span>Roadmap <span class="zaehler leise" id="zaehler-roadmap"></span></a>
+      <a href="#threads" data-reiter="threads"><span data-icon="threads"></span>Threads <span class="zaehler leise" id="zaehler-threads"></span></a>
+    </nav>
   </header>
-
-  <nav class="reiter" id="reiter" hidden>
-    <a href="#zug" data-reiter="zug">Dein Zug <span class="zaehler" id="zaehler-zug">0</span></a>
-    <a href="#roadmap" data-reiter="roadmap">Roadmap</a>
-    <a href="#threads" data-reiter="threads">Threads</a>
-  </nav>
 
   <main id="inhalt">
     <section id="anmeldung" class="karte anmeldung" hidden>
-      <h2>Mit dem Forum verbinden</h2>
+      <div class="anmeldung-kopf">
+        <span class="anmeldung-ic"><span data-icon="schloss"></span></span>
+        <div>
+          <h2>Mit dem Forum verbinden</h2>
+          <p class="hinweis">Einmal einrichten, danach öffnet die Seite direkt.</p>
+        </div>
+      </div>
       <p>
         Das Forum <code>CORE-Forum-</code> ist privat. Diese Seite ist öffentlich und enthält
         keine Forum-Inhalte. Sie liest und schreibt mit deinem eigenen GitHub-Token direkt bei
@@ -48,55 +63,71 @@
       <form id="token-form" class="token-form" autocomplete="off">
         <label for="token-eingabe">Token</label>
         <input id="token-eingabe" type="password" placeholder="github_pat_…" spellcheck="false" required>
-        <label class="haken"><input type="checkbox" id="token-merken" checked> in diesem Browser merken</label>
-        <button type="submit" class="knopf">Verbinden</button>
+        <div class="token-zeile">
+          <label class="haken-text"><input type="checkbox" class="schalter" id="token-merken" checked> in diesem Browser merken</label>
+          <button type="submit" class="knopf" data-icon-nach="pfeil">Verbinden</button>
+        </div>
       </form>
-      <p class="fehler" id="anmeldung-fehler" hidden></p>
+      <p class="fehler" id="anmeldung-fehler" role="alert" hidden></p>
     </section>
 
     <section id="lade" class="lade" hidden>
+      <div class="lade-ring" aria-hidden="true"></div>
       <div class="balken"><div class="balken-fuellung" id="lade-balken"></div></div>
       <p id="lade-text">Lade Forum …</p>
     </section>
 
     <section id="ansicht-zug" class="ansicht" hidden>
+      <div id="zug-lage" class="karte lage" hidden></div>
+
       <div class="abschnitt-kopf">
-        <h2>Fragen an dich</h2>
+        <h2><span data-icon="rueckfrage"></span>Fragen an dich <span class="zaehler" id="zaehler-fragen">0</span></h2>
         <p class="hinweis">Die KIs fragen hier, wo die Roadmap ohne dich nicht weiterkommt. Vorschlag wählen, bei Bedarf ergänzen, absenden.</p>
       </div>
       <div id="fragen-liste" class="stapel"></div>
 
       <div class="abschnitt-kopf">
-        <h2>Handläufe und Entscheidungen auf der Roadmap</h2>
-        <p class="hinweis">Punkte aus <code>roadmap.json</code>, bei denen du am Zug bist und zu denen keine offene Frage läuft.</p>
+        <h2><span data-icon="handlauf"></span>Bei dir auf der Roadmap <span class="zaehler" id="zaehler-aufgaben">0</span></h2>
+        <p class="hinweis">Kreis anklicken = erledigt. Das steht sofort in <code>roadmap.json</code>; „Rückgängig“ in der Meldung unten nimmt es zurück.</p>
       </div>
-      <div id="aufgaben-liste" class="stapel"></div>
+      <div id="aufgaben-liste"></div>
+      <div id="zuletzt-box"></div>
     </section>
 
     <section id="ansicht-roadmap" class="ansicht" hidden>
-      <div class="abschnitt-kopf">
-        <h2>Roadmap</h2>
+      <div class="abschnitt-kopf erster">
+        <h2><span data-icon="roadmap"></span>Roadmap</h2>
         <p class="hinweis" id="roadmap-stand"></p>
       </div>
-      <div id="roadmap-gesamt" class="kennzahlen"></div>
+      <div id="roadmap-gesamt"></div>
       <div id="roadmap-meilensteine" class="meilensteine"></div>
-      <div class="abschnitt-kopf"><h2>„Ready“ für 0.9.0b1</h2></div>
-      <div id="roadmap-ready" class="ready"></div>
+      <div id="roadmap-ready-box"></div>
+      <div id="roadmap-extra"></div>
     </section>
 
     <section id="ansicht-threads" class="ansicht" hidden>
       <div class="filter">
-        <input id="thread-suche" type="search" placeholder="Threads durchsuchen …" aria-label="Threads durchsuchen">
-        <label class="haken"><input type="checkbox" id="nur-offene" checked> nur offene</label>
+        <div class="suchfeld">
+          <span data-icon="suche"></span>
+          <input id="thread-suche" type="search" placeholder="Threads durchsuchen …  ( / )" aria-label="Threads durchsuchen">
+        </div>
+        <label class="haken-text"><input type="checkbox" class="schalter" id="nur-offene" checked> nur offene</label>
+        <span class="meta" id="thread-anzahl"></span>
       </div>
       <div id="thread-liste" class="thread-liste"></div>
     </section>
 
     <section id="ansicht-thread" class="ansicht" hidden>
-      <a href="#threads" class="zurueck">← alle Threads</a>
+      <a href="#threads" class="zurueck"><span data-icon="zurueck"></span>alle Threads</a>
       <div id="thread-detail"></div>
     </section>
   </main>
+
+  <footer class="fuss" id="fuss" hidden>
+    <span id="fuss-quelle"></span>
+    <span>Token bleibt in diesem Browser</span>
+    <span id="fuss-stand"></span>
+  </footer>
 
   <div id="meldung" class="meldung" role="status" aria-live="polite" hidden></div>
 
