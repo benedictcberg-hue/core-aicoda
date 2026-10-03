@@ -33,6 +33,7 @@ const zustand = {
   kopfEtag: null,       // ETag dazu: der Puls fragt mit If-None-Match (304 kostet kein Kontingent)
   neu: null,            // was seit dem letzten Besuch passiert ist (neuesErmitteln)
   rest: null,           // X-RateLimit-Remaining der letzten Antwort
+  wartet: new Map(),    // Thread-Pfad → Anhang in der Atempause {bis, sorte, nummer, quelle, arbeit …}
 };
 
 /* Während laden() läuft: was seit Ladebeginn geschrieben wurde. Das ist neuer als der Baum,
@@ -340,11 +341,12 @@ function schonAngehaengt(text, sorte, inhalt) {
 }
 
 /* Liest frisch, hängt an, schreibt. Bei Konflikt (jemand schrieb dazwischen) einmal neu. */
-async function anhaengen(pfad, sorte, inhalt, meldung) {
+async function anhaengen(pfad, sorte, inhalt, meldung, pruefen) {
   const block = blockText(sorte, inhalt);
   for (let versuch = 0; versuch < 3; versuch++) {
     const { text, sha } = await dateiLesen(pfad);
     if (schonAngehaengt(text, sorte, inhalt)) return { text, sha, schonDa: true };
+    if (pruefen) pruefen(text);
     const neu = (text.endsWith("\n") ? text : text + "\n") + block;
     try {
       const neuSha = await dateiSchreiben(pfad, neu, sha, meldung);
@@ -927,9 +929,9 @@ async function abhaken(eintrag, art) {
   let notiz = art === "punkt" ? notizBereit(id) : "";
   if (notiz) {
     // Die Notiz landet in roadmap.json – auch die lesen alle KIs.
-    const geprueft = await geheimnisPruefen(notiz);
-    if (geprueft === null) { const f = sichtbarFinden(`notiztext:${id}`); if (f) f.focus(); return; }
-    notiz = geprueft;
+    const feld = sichtbarFinden(`notiztext:${id}`);
+    if (feld && (await pruefeVorSenden([{ el: feld, entwurf: notizSchluessel }], sichtbarFinden(`haken:${id}`))) !== "senden") return;
+    notiz = notizBereit(id);
   }
   statusSchreiben({
     id, art, ziel: "x",
@@ -1178,119 +1180,381 @@ function zuletztZeichnen() {
   box.append(aufklappen(details, "zuletzt", false));
 }
 
-/* --- Geheimnis-Wächter ---
+/* --- Wächter beim Anhängen ---
  * Das Forum ist anhängend und wird von KIs dreier Anbieter gelesen; Git vergisst nichts.
- * Vor jedem Schreiben (Antwort, Beitrag, Notiz) nach Mustern suchen, die wie ein Geheimnis
- * aussehen, und nachfragen. Ein Fund ist ein Verdacht, kein Beweis: „Trotzdem senden“ bleibt. */
+ * Vor jedem eigenen Text: Geheimnis-Muster prüfen und nachfragen. Ein Fund ist ein Verdacht,
+ * kein Beweis: „Trotzdem senden“ bleibt immer möglich. */
 const GEHEIM_MUSTER = [
   { name: "GitHub-Token", re: /\b(github_pat_[A-Za-z0-9_]{20,})/g },
   { name: "GitHub-Token", re: /\b(gh[pousr]_[A-Za-z0-9]{30,})/g },
   { name: "Anthropic-Schlüssel", re: /\b(sk-ant-[A-Za-z0-9_-]{16,})/g },
   { name: "Google-API-Schlüssel", re: /\b(AIza[0-9A-Za-z_-]{30,})/g },
-  { name: "Server-Token", re: /\bBSVP_[A-Z_]*(?:TOKEN|KEY|PIN)\s*=\s*(\S+)/g },
-  { name: "Zugangscode", re: /\b([A-Z]{2}\d{2},\d{2})\b/g },
-  // Schlüsselwort + Wert mit Ziffer: trifft „pin ab1234“, nicht „PIN vor dem Beta-Start“
-  { name: "PIN/Passwort", re: /\b(?:pin|passwort|kennwort|password|passwd|token|geheimnis|schlüssel|key)\b[\s:=]+(?:(?:ist|lautet|is|auf)\s+)?((?=\S*\d)\S{4,})/gi },
+  { name: "Google-API-Schlüssel", re: /\b(AQ\.[0-9A-Za-z_-]{20,})/g },
+  { name: "Server-Token", re: /\bBSVP_[A-Z_]*(?:TOKEN|KEY)\s*=\s*(\S+)/g },
+  { name: "Zugangscode", re: /\b(PE\d{2},\d{2})\b/g },
+  // Stichwort + Wert mit Ziffer: trifft „pin ab1234“, nicht „PIN vor dem Beta-Start“
+  { name: "PIN/Passwort", re: /\b(?:pin|passwort|kennwort|password|token|geheimnis|schl(?:ü|ue)ssel|key)\b[ \t]*[:=]?[ \t]*(\S{4,})/gi, wert: true },
 ];
 const ERSATZ = "‹gesetzt, Wert nicht im Forum›";
 
-function geheimnisseFinden(text) {
-  const funde = [];
+/* Fundstellen [{start, ende, wert, name}] – markiert wird immer nur der Wert. */
+function geheimnisFinden(text) {
   const t = String(text || "");
-  if (zustand.token && zustand.token.length >= 10 && t.includes(zustand.token)) funde.push({ name: "dein GitHub-Token", wert: zustand.token });
-  for (const { name, re } of GEHEIM_MUSTER) {
+  const funde = [];
+  const dazu = (start, wert, name) => {
+    const ende = start + wert.length;
+    if (!funde.some((f) => start < f.ende && ende > f.start)) funde.push({ start, ende, wert, name });
+  };
+  if (zustand.token && zustand.token.length >= 8) {
+    for (let i = t.indexOf(zustand.token); i >= 0; i = t.indexOf(zustand.token, i + 1)) dazu(i, zustand.token, "dein GitHub-Token");
+  }
+  for (const { name, re, wert: nurMitZiffer } of GEHEIM_MUSTER) {
     re.lastIndex = 0;
     let m;
     while ((m = re.exec(t))) {
-      const wert = m[1].replace(/[.,;:!?)»“"']+$/, "");
-      if (wert.length >= 4 && wert !== ERSATZ && !funde.some((f) => f.wert === wert)) funde.push({ name, wert });
+      let w = m[1];
+      const start = m.index + m[0].length - w.length;
+      w = w.replace(/[.,;:!?)»“"']+$/, "");
+      if (w.length < 4 || w === ERSATZ || w.includes("‹")) continue;
+      if (nurMitZiffer) {
+        if (!/\d/.test(w)) continue;
+        if (/^\d{4}-\d{2}-\d{2}/.test(w) || /^v?\d+(\.\d+)+$/i.test(w) || /^#\d+/.test(w)) continue;
+      }
+      dazu(start, w, name);
     }
   }
-  return funde;
+  return funde.sort((a, b) => a.start - b.start);
 }
-const maskiert = (wert) => wert.slice(0, 2) + "•".repeat(Math.min(8, Math.max(3, wert.length - 2)));
+const maskiert = (wert) => `${String(wert).slice(0, 2)}••••`;
 function geheimnisseErsetzen(text, funde) {
   let aus = String(text);
-  for (const f of funde) aus = aus.split(f.wert).join(ERSATZ);
+  for (const f of [...funde].sort((a, b) => b.start - a.start)) aus = aus.slice(0, f.start) + ERSATZ + aus.slice(f.ende);
   return aus;
 }
 
-function geheimnisDialog(funde) {
+function waechterDialog(funde) {
   return new Promise((fertig) => {
-    const ersetzen = el("button", { type: "submit", value: "ersetzen", class: "knopf" }, icon("schild"), "Wert ersetzen");
-    const dialog = el("dialog", { class: "dialog", "aria-labelledby": "geheim-titel" },
-      el("form", { method: "dialog", class: "dialog-inhalt" },
-        el("div", { class: "dialog-kopf" }, el("span", { class: "dialog-ic", "aria-hidden": "true" }, icon("schild")),
-          el("h2", { id: "geheim-titel", text: "Sieht nach einem Geheimnis aus" })),
-        el("ul", { class: "dialog-funde" }, funde.map((f) => el("li", {}, el("b", { text: `${f.name}: ` }), el("code", { text: maskiert(f.wert) })))),
-        el("p", { text: "Das Forum lesen KIs von drei Anbietern, und Git vergisst nichts – auch ein späterer Beitrag löscht den Wert nicht mehr." }),
-        el("p", { class: "hinweis", text: `„Wert ersetzen“ schreibt statt dessen ${ERSATZ}.` }),
-        el("div", { class: "dialog-knoepfe" },
-          el("button", { type: "submit", value: "senden", class: "knopf zweit" }, "Trotzdem senden"),
-          el("button", { type: "submit", value: "bearbeiten", class: "knopf zweit" }, icon("notiz"), "Bearbeiten"),
-          ersetzen)));
-    dialog.addEventListener("close", () => {
-      const wahl = dialog.returnValue || "bearbeiten";
-      dialog.remove();
-      fertig(wahl);
-    });
-    document.body.append(dialog);
+    const dialog = $("waechter");
+    const ersetzen = el("button", { type: "submit", value: "ersetzen", class: "knopf", autofocus: true }, icon("schild"), "Wert ersetzen");
+    dialog.replaceChildren(el("form", { method: "dialog", class: "dialog-inhalt" },
+      el("div", { class: "dialog-kopf" }, el("span", { class: "dialog-ic", "aria-hidden": "true" }, icon("schild")),
+        el("h2", { id: "waechter-titel", text: "Sieht nach einem Geheimnis aus" })),
+      el("p", { text: "Das Forum lesen KIs von drei Anbietern, und Git vergisst nichts. Was angehängt ist, lässt sich nicht mehr entfernen." }),
+      el("ul", { class: "dialog-funde" }, funde.map((f) => el("li", {}, el("b", { text: `${f.name}: ` }), el("code", { text: maskiert(f.wert) })))),
+      el("div", { class: "dialog-knoepfe" },
+        el("button", { type: "submit", value: "senden", class: "knopf zweit" }, "Trotzdem senden"),
+        el("button", { type: "submit", value: "bearbeiten", class: "knopf zweit" }, icon("notiz"), "Bearbeiten"),
+        ersetzen)));
+    dialog.returnValue = "";
+    const zu = () => { dialog.removeEventListener("close", zu); fertig(dialog.returnValue || "bearbeiten"); };
+    dialog.addEventListener("close", zu);
     dialog.showModal();
     ersetzen.focus();
   });
 }
 
-/* null = nicht senden (Bearbeiten/Esc), sonst der zu schreibende Text */
-async function geheimnisPruefen(text) {
-  const funde = geheimnisseFinden(text);
-  if (!funde.length) return text;
-  const wahl = await geheimnisDialog(funde);
-  if (wahl === "senden") return text;
-  if (wahl === "ersetzen") return geheimnisseErsetzen(text, funde);
-  return null;
+/* felder: [{el, entwurf}] · knopf: bekommt den Fokus nach „Wert ersetzen“. 'senden' | 'abbrechen' */
+async function pruefeVorSenden(felder, knopf) {
+  const funde = [];
+  for (const feld of felder) if (feld.el) for (const f of geheimnisFinden(feld.el.value)) funde.push({ ...f, feld });
+  if (!funde.length) return "senden";
+  const dialog = $("waechter");
+  if (!dialog || typeof dialog.showModal !== "function") {
+    return window.confirm(`Sieht nach einem Geheimnis aus (${funde.map((f) => maskiert(f.wert)).join(", ")}). Das Forum lesen alle KIs. Trotzdem senden?`) ? "senden" : "abbrechen";
+  }
+  const wahl = await waechterDialog(funde);
+  if (wahl === "senden") return "senden";
+  if (wahl === "ersetzen") {
+    for (const feld of felder) {
+      const eigene = funde.filter((f) => f.feld === feld);
+      if (!eigene.length) continue;
+      feld.el.value = geheimnisseErsetzen(feld.el.value, eigene);
+      if (feld.entwurf) entwurfSetzen(feld.entwurf, feld.el.value);
+    }
+    if (knopf) knopf.focus();
+    melden("Ersetzt. Prüfen und noch einmal senden.");
+    return "abbrechen";
+  }
+  const erster = funde[0];
+  erster.feld.el.focus();
+  try { erster.feld.el.setSelectionRange(erster.start, erster.ende); } catch (_) { /* Feldart ohne Auswahl */ }
+  return "abbrechen";
 }
 
-/* Altlast: was schon in eigenen Beiträgen steht. Nur maskiert zeigen; löschen kann das Pult
- * nichts (anhängend, Git-Historie) – ehrlich bleibt nur: Wert wechseln. */
-const ALTLAST_SCHLUESSEL = "core-pult-altlast-ok";
+/* Altlast: was schon in eigenen Beiträgen oder Notizen steht. Nur maskiert zeigen; löschen
+ * kann das Pult nichts (anhängend, Git-Historie) – ehrlich bleibt nur: Wert wechseln. */
+const ALTLAST_SCHLUESSEL = `core-pult-altlast:${ZWEIG}`;
 function altlastQuittiert() {
   try { const a = JSON.parse(localStorage.getItem(ALTLAST_SCHLUESSEL) || "[]"); return new Set(Array.isArray(a) ? a : []); } catch (_) { return new Set(); }
 }
+function altlastQuittieren(schluessel) {
+  const neu = altlastQuittiert();
+  neu.add(schluessel);
+  try { localStorage.setItem(ALTLAST_SCHLUESSEL, JSON.stringify([...neu])); } catch (_) { /* gesperrt */ }
+  mitFokus(warnungZeichnen, "zug-waechter-titel");
+  melden("Gemerkt. Dieser Hinweis kommt nicht wieder.");
+}
 function warnungZeichnen() {
-  const box = $("zug-warnung");
+  const box = $("zug-waechter");
   box.replaceChildren();
   const ok = altlastQuittiert();
   const funde = [];
   for (const t of zustand.threads) {
+    const anker = blockAnker(t);
     for (const b of t.bloecke) {
-      if (b.ki !== ICH.ki || ok.has(`${t.slug}|${b.zeit}`)) continue;
-      const f = geheimnisseFinden(b.text);
-      if (f.length) funde.push({ t, b, f });
+      const schl = `${t.slug}|${b.zeit}`;
+      if (b.ki !== ICH.ki || ok.has(schl)) continue;
+      const f = geheimnisFinden(b.text);
+      if (f.length) funde.push({ schl, titel: `${t.nummer} · ${b.sorte} · ${zeitLesbar(b.zeit)}`, href: `#t/${encodeURIComponent(t.slug)}~${anker.get(b)}`, f });
     }
+  }
+  for (const { punkt } of roadmapPunkte()) {
+    const schl = `roadmap|${punkt.id}`;
+    if (!punkt.notiz || ok.has(schl)) continue;
+    const f = geheimnisFinden(punkt.notiz);
+    if (f.length) funde.push({ schl, titel: `roadmap.json · ${punkt.id} · Notiz`, href: "#roadmap", f });
   }
   if (!funde.length) { box.hidden = true; return; }
   box.hidden = false;
   box.append(
     el("div", { class: "neu-kopf" },
-      el("span", { class: "warn-ic", "aria-hidden": "true" }, icon("schild")),
+      el("span", { class: "warn-ic", "aria-hidden": "true" }, icon("warnung")),
       el("div", { class: "neu-kopf-text" },
-        el("h2", { text: "Vermutlich ein Geheimnis im Forum" }),
-        el("p", { class: "hinweis", text: "In deinen Beiträgen steht etwas, das wie ein PIN, Passwort oder Schlüssel aussieht. KIs von drei Anbietern lesen mit; Git behält es. Löschen geht nicht – wechsle den Wert (z. B. PIN im Server-Fenster → Zugang)." })),
-      el("button", {
-        type: "button", class: "knopf zweit klein-knopf", "data-fokus": "altlast-ok",
-        onclick: () => {
-          const neu = altlastQuittiert();
-          for (const x of funde) neu.add(`${x.t.slug}|${x.b.zeit}`);
-          try { localStorage.setItem(ALTLAST_SCHLUESSEL, JSON.stringify([...neu])); } catch (_) { /* gesperrt */ }
-          warnungZeichnen();
-          melden("Gemerkt. Neue Funde erscheinen hier wieder.");
-        },
-      }, icon("haken"), "Gewechselt")),
-    el("ul", { class: "neu-liste" }, funde.map(({ t, b, f }) => el("li", {}, icon("warnung", "neu-ic"),
-      el("a", { class: "neu-text", href: `#t/${encodeURIComponent(t.slug)}` },
-        el("span", { class: "neu-titel", text: `${t.nummer} · ${t.titel}` }),
-        el("span", { class: "neu-zusatz" }, `${b.sorte} vom ${zeitLesbar(b.zeit)} · `, f.map((x) => `${x.name} ${maskiert(x.wert)}`).join(", ")))))),
+        el("h2", { id: "zug-waechter-titel", tabindex: "-1", "data-fokus": "zug-waechter-titel", text: "Vermutlich ein Geheimnis im Forum" }),
+        el("p", { class: "hinweis", text: "Löschen kann das Pult nichts: Die Datei ist anhängend, und Git behält jede Fassung. Sicher ist nur, den Wert zu ändern. Beim PIN: Server-Fenster → Zugang → PIN neu setzen." }))),
+    el("ul", { class: "neu-liste" }, funde.map((x) => el("li", { class: "waechter-zeile" }, icon("schild", "neu-ic"),
+      el("a", { class: "neu-text", href: x.href },
+        el("span", { class: "neu-titel", text: x.titel }),
+        el("span", { class: "neu-zusatz", text: x.f.map((g) => `${g.name} „${maskiert(g.wert)}“`).join(", ") })),
+      el("span", { class: "waechter-knoepfe" },
+        el("button", { type: "button", class: "knopf zweit klein-knopf", onclick: () => altlastQuittieren(x.schl) }, icon("haken"), "Wert ist geändert"),
+        el("button", { type: "button", class: "knopf zweit klein-knopf", onclick: () => altlastQuittieren(x.schl) }, "Kein Geheimnis"))))),
   );
+}
+
+/* --- Angaben „im Feld“: echte, typisierte Felder statt Freitext --- */
+const ANGABE = {
+  pfad: { etikett: "Pfad (UNC oder Laufwerk, z. B. \\\\nas\\bsvp)", kurz: "Pfad", zeile: "Pfad" },
+  datum: { etikett: "Datum", kurz: "Datum", zeile: "Termin" },
+  zahl: { etikett: "Anzahl", kurz: "Anzahl", zeile: "Anzahl" },
+  text: { etikett: "Angabe", kurz: "Angabe", zeile: "Angabe" },
+};
+function angabeArt(text) {
+  const t = String(text || "");
+  if (!/im Feld/i.test(t)) return null;
+  if (/\b(Datum|Termin|Tag)\b/i.test(t)) return "datum";
+  if (/UNC-Pfad|Pfad|Laufwerk|Ordner|Freigabe/i.test(t)) return "pfad";
+  if (/\b(Anzahl|Zahl)\b/i.test(t)) return "zahl";
+  return "text";
+}
+/* {art, pflicht, optional} für eine Wahl ('A' …, 'eigen' oder '') oder null */
+function angabeFuer(f, wahl) {
+  const v = f.vorschlaege.find((x) => x.buchstabe === wahl);
+  const ausVorschlag = v ? angabeArt(v.text) : null;
+  const art = ausVorschlag || angabeArt(`${f.kontext}\n${f.frage}`);
+  if (art) return { art, pflicht: !!v };
+  if (/^Wann\b/i.test(f.frage)) return { art: "datum", pflicht: false, termin: true };
+  return null;
+}
+function angabeFeld(a, schluessel, fokus) {
+  const art = a.art;
+  const attrs = { id: fokus, "data-fokus": fokus, name: "angabe" };
+  let feld;
+  if (art === "datum") feld = el("input", { ...attrs, type: "date" });
+  else if (art === "pfad") feld = el("input", { ...attrs, type: "text", class: "mono", autocapitalize: "off", autocorrect: "off", spellcheck: "false", placeholder: "\\\\server\\freigabe oder E:\\…" });
+  else if (art === "zahl") feld = el("input", { ...attrs, type: "text", inputmode: "numeric", pattern: "[0-9]*" });
+  else feld = el("input", { ...attrs, type: "text" });
+  feld.value = entwurf(schluessel);
+  feld.addEventListener("input", () => entwurfSetzen(schluessel, feld.value));
+  const etikett = a.termin ? "Termin (optional)" : ANGABE[art].etikett + (a.pflicht ? "" : " (optional)");
+  return { feld, label: el("label", { for: fokus, text: etikett }) };
+}
+const pfadSiehtAus = (w) => /^\\\\[^\\\s]+\\\S/.test(w) || /^[A-Za-z]:\\/.test(w) || /^\//.test(w);
+/* Fehlertext oder "" – wert ist getrimmt */
+function angabeFehler(a, wert) {
+  if (!wert) return a.pflicht ? `Die Frage bittet um eine Angabe im Feld: ${ANGABE[a.art].kurz}.` : "";
+  if (a.art === "zahl" && !/^\d{1,4}$/.test(wert)) return "Anzahl bitte als Zahl (z. B. 4).";
+  if (a.art === "datum" && !/^\d{4}-\d{2}-\d{2}$/.test(wert)) return "Datum bitte vollständig wählen.";
+  return "";
+}
+
+/* „Zu FRAGE [ki/chat] zeit“ → die FRAGE im selben Thread */
+function frageZuAntwort(t, b) {
+  const m = /^Zu FRAGE \[([a-z0-9_-]+)\/([a-z0-9_-]+)\] (\S+)$/.exec(String(b.text).split("\n")[0]);
+  if (!m) return null;
+  return t.bloecke.find((x) => x.sorte === "FRAGE" && x.ki === m[1] && x.chat === m[2] && x.zeit === m[3]) || null;
+}
+/* Beschlüsse ohne die verlangte Angabe (heute 057: Pfad, 059: Anzahl) */
+function angabenFehlen(t) {
+  const aus = [];
+  const letzte = new Map();
+  for (const b of t.bloecke) {
+    if (b.ki !== ICH.ki || (b.sorte !== "ANTWORT" && b.sorte !== "BESCHLUSS")) continue;
+    const frage = frageZuAntwort(t, b);
+    if (frage) letzte.set(frage, b);
+  }
+  for (const [frage, b] of letzte) {
+    if (/^(Pfad|Termin|Anzahl|Angabe): /m.test(b.text)) continue;
+    const wahlZeile = (String(b.text).split("\n").find((z) => z.startsWith("Wahl: ")) || "");
+    const m = /^Wahl: Vorschlag ([A-Z]):/.exec(wahlZeile);
+    const a = angabeFuer(frageParsen(frage), m ? m[1] : "eigen");
+    if (a && a.pflicht) aus.push({ b, frage, a, wahlZeile, bezug: String(b.text).split("\n")[0] });
+  }
+  return aus;
+}
+function angabenFehltZeichnen(t, anker) {
+  for (const x of angabenFehlen(t)) {
+    const a = anker.get(x.b);
+    const ziel = document.getElementById(`anker-${a}`);
+    if (!ziel) continue;
+    const schl = `nachreichen:${t.slug}:${a}`;
+    const quelle = `nachreichen:${a}`;
+    const { feld, label } = angabeFeld(x.a, `${schl}:angabe`, `${schl}:feld`);
+    const knopf = el("button", { type: "submit", class: "knopf", "data-fokus": `${schl}:senden`, "aria-keyshortcuts": "Control+Enter Meta+Enter", title: "Senden (Strg+Enter)" }, icon("senden"), "Nachreichen");
+    const form = el("form", { class: "karte angabe-fehlt", "data-quelle": quelle, novalidate: true },
+      el("p", {}, icon("warnung"), el("b", { text: ` Angabe fehlt: ${ANGABE[x.a.art].kurz}.` }), " Ohne sie kann die KI nicht weitermachen."),
+      el("div", { class: "angabe" }, label, feld),
+      atempauseZeile(t.pfad, quelle),
+      el("div", { class: "antwort-knoepfe" }, knopf));
+    tastenSenden(form, [feld], t.pfad, quelle);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (zustand.wartet.has(t.pfad)) { atempauseJetzt(t.pfad); return; }
+      const wert = feld.value.trim();
+      const fehler = angabeFehler(x.a, wert) || (!wert ? `Die Frage bittet um eine Angabe im Feld: ${ANGABE[x.a.art].kurz}.` : "");
+      if (fehler) { melden(fehler, true); feld.focus(); return; }
+      if ((await pruefeVorSenden([{ el: feld, entwurf: `${schl}:angabe` }], knopf)) !== "senden") return;
+      const text = `${x.bezug}\n${x.wahlZeile}\n${ANGABE[x.a.art].zeile}: ${feld.value.trim()}\n\nNachtrag: Angabe nachgereicht.`;
+      atempauseStarten(t.pfad, {
+        sorte: x.b.sorte, nummer: t.nummer, slug: t.slug, quelle, fokus: `${schl}:senden`,
+        knoepfe: [knopf],
+        arbeit: async () => {
+          const r = await anhaengen(t.pfad, x.b.sorte, text, `${t.slug}: ${x.b.sorte} [${ICH.ki}/${ICH.chat}]`);
+          return () => {
+            entwuerfeLoeschen(schl + ":");
+            threadErsetzen(t.pfad, r.text, r.sha);
+            melden(`Angabe in ${t.nummer} nachgereicht.`);
+          };
+        },
+      });
+    });
+    sperrenWennSchreibt(t.pfad, [knopf]);
+    ziel.after(form);
+  }
+}
+
+/* --- Atempause: 5 s zwischen Klick und Anhängen, mit Rückgängig ---
+ * Anhängen ist endgültig. Haken in roadmap.json brauchen das nicht, sie haben Rückgängig. */
+const ATEMPAUSE_MS = 5000;
+const NICHT_GESENDET = "core-pult-nicht-gesendet";
+
+function atempauseRest(pfad) {
+  const w = zustand.wartet.get(pfad);
+  return w ? Math.max(0, Math.ceil((w.bis - Date.now()) / 1000)) : 0;
+}
+/* Statuszeile in der Karte, die den Anhang ausgelöst hat; überlebt jedes Neuzeichnen. */
+function atempauseZeile(pfad, quelle) {
+  const w = zustand.wartet.get(pfad);
+  if (!w || w.quelle !== quelle) return null;
+  return el("p", { class: "atempause", role: "status" },
+    el("span", {}, `${w.sorte} an ${w.nummer} geht in `),
+    el("span", { class: "atempause-sek", "data-pfad": pfad, "aria-hidden": "true", text: String(atempauseRest(pfad)) }),
+    el("span", { class: "sr-nur", text: "5" }),
+    el("span", { text: " s raus." }),
+    el("span", { class: "atempause-knoepfe" },
+      el("button", { type: "button", class: "knopf zweit klein-knopf", "data-fokus": `wartet-rueck:${pfad}`, onclick: () => atempauseAbbrechen(pfad) }, icon("undo"), "Rückgängig"),
+      el("button", { type: "button", class: "knopf klein-knopf", "data-fokus": `wartet-jetzt:${pfad}`, onclick: () => atempauseJetzt(pfad) }, icon("senden"), "Jetzt senden")));
+}
+function atempauseStarten(pfad, info) {
+  if (zustand.wartet.has(pfad) || zustand.schreibt.has(pfad)) return;
+  const w = { ...info, bis: Date.now() + ATEMPAUSE_MS };
+  w.timer = setTimeout(() => atempauseJetzt(pfad), ATEMPAUSE_MS);
+  w.takt = setInterval(() => {
+    for (const s of document.querySelectorAll(".atempause-sek")) if (s.dataset.pfad === pfad) s.textContent = String(atempauseRest(pfad));
+  }, 250);
+  zustand.wartet.set(pfad, w);
+  allesZeichnenMitFokus(`wartet-rueck:${pfad}`);
+  melden(`${w.sorte} an ${w.nummer} wird in 5 s angehängt.`, { aktion: { text: "Rückgängig", label: `${w.sorte} an ${w.nummer} nicht senden`, tun: () => atempauseAbbrechen(pfad) } });
+}
+function atempauseAufloesen(pfad) {
+  const w = zustand.wartet.get(pfad);
+  if (!w) return null;
+  clearTimeout(w.timer);
+  clearInterval(w.takt);
+  zustand.wartet.delete(pfad);
+  return w;
+}
+function atempauseAbbrechen(pfad, still) {
+  const w = atempauseAufloesen(pfad);
+  if (!w) return;
+  allesZeichnenMitFokus(w.fokus);
+  if (!still) melden("Nicht gesendet. Der Entwurf bleibt.", { fokus: w.fokus });
+}
+function atempauseJetzt(pfad) {
+  const w = atempauseAufloesen(pfad);
+  if (!w) return;
+  if (!$("meldung").hidden && /angehängt/.test($("meldung").textContent)) meldungZu();
+  threadSchreiben(pfad, w.knoepfe || [], w.arbeit);
+  allesZeichnen();
+}
+/* Seite verdeckt: nichts halb senden (iOS schneidet Lesen+Schreiben ab). Abbrechen ist der sichere Fehler. */
+function atempausenVerwerfen() {
+  if (!zustand.wartet.size) return;
+  const liste = [];
+  for (const pfad of [...zustand.wartet.keys()]) {
+    const w = atempauseAufloesen(pfad);
+    liste.push({ slug: w.slug, nummer: w.nummer, sorte: w.sorte, quelle: w.quelle, fokus: w.fokus });
+  }
+  try { sessionStorage.setItem(NICHT_GESENDET, JSON.stringify(liste)); } catch (_) { /* gesperrt */ }
+  allesZeichnen();
+}
+function nichtGesendetMelden() {
+  let liste = [];
+  try { liste = JSON.parse(sessionStorage.getItem(NICHT_GESENDET) || "[]"); sessionStorage.removeItem(NICHT_GESENDET); } catch (_) { liste = []; }
+  if (!Array.isArray(liste) || !liste.length) return;
+  const w = liste[0];
+  melden(`${w.sorte} an ${w.nummer} nicht gesendet (Seite war verdeckt). Der Entwurf liegt in der Karte.`, {
+    fehler: true,
+    aktion: {
+      text: "Zur Karte", icon: "pfeil",
+      tun: () => {
+        location.hash = String(w.quelle).startsWith("frage:") ? "#zug" : `#t/${encodeURIComponent(w.slug)}`;
+        route();
+        const k = sichtbarFinden(w.fokus);
+        if (k) { k.scrollIntoView({ block: "center" }); k.focus(); }
+      },
+    },
+  });
+}
+function allesZeichnenMitFokus(gewuenscht) {
+  mitFokus(() => {
+    kopfSetzen();
+    fragenZeichnen();
+    zugRoadmapZeichnen();
+    roadmapZeichnen();
+    threadListeZeichnen();
+    zaehlerSetzen();
+    route();
+  }, gewuenscht);
+}
+
+/* Strg/⌘+Enter in Textfeldern sendet; während der Atempause heißt es „Jetzt senden“. */
+function tastenSenden(form, felder, pfad, quelle) {
+  for (const f of felder) {
+    f.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || e.isComposing) return;
+      e.preventDefault();
+      const w = zustand.wartet.get(pfad);
+      if (w && w.quelle === quelle) { atempauseJetzt(pfad); return; }
+      if (typeof form.requestSubmit === "function") form.requestSubmit();
+      else { const k = form.querySelector("button[type=submit]"); if (k) k.click(); }
+    });
+  }
+  form.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const w = zustand.wartet.get(pfad);
+    if (w && w.quelle === quelle) { e.stopPropagation(); atempauseAbbrechen(pfad); }
+  });
 }
 
 /* --- Seit deinem letzten Besuch --- */
@@ -1523,7 +1787,7 @@ function scrollHaltAnwenden(halt) {
 let pulsLaeuft = false;
 function beschaeftigt() {
   const a = document.activeElement;
-  return zustand.laufend.size > 0 || zustand.schreibt.size > 0
+  return zustand.laufend.size > 0 || zustand.schreibt.size > 0 || zustand.wartet.size > 0
     || (a && /^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName) && a.type !== "checkbox" && a.type !== "radio" && !!a.value);
 }
 async function puls() {
@@ -1562,7 +1826,8 @@ function frageKarte({ thread, block, f }) {
   const gemerkt = entwurf(`${schl}:beschluss`);
   beschluss.checked = gemerkt ? gemerkt === "ja" : istErste;
 
-  const senden = el("button", { type: "submit", class: "knopf" });
+  const quelle = `frage:${schl}`;
+  const senden = el("button", { type: "submit", class: "knopf", "data-fokus": `${schl}:senden`, "aria-keyshortcuts": "Control+Enter Meta+Enter", title: "Senden (Strg+Enter)" });
   const zurueck = el("button", { type: "button", class: "knopf zweit" }, icon("undo"), "Rückfrage");
   const sendenText = () => senden.replaceChildren(icon(beschluss.checked ? "haken" : "senden"), beschluss.checked ? "Beschließen" : "Antworten");
   sendenText();
@@ -1574,10 +1839,28 @@ function frageKarte({ thread, block, f }) {
   const wahl = entwurf(`${schl}:wahl`);
   const etiketten = [];
   const markieren = () => { for (const l of etiketten) l.classList.toggle("gewaehlt", l.querySelector("input").checked); };
+  // Angabe „im Feld“: Art hängt an der Wahl, der Wert bleibt beim Wechsel stehen
+  const angabeBox = el("div", { class: "angabe" });
+  let angabeEl = null;
+  let pfadBestaetigt = false;
+  const angabeZeichnen = () => {
+    const w = entwurf(`${schl}:wahl`);
+    const a = angabeFuer(f, w);
+    angabeBox.replaceChildren();
+    angabeEl = null;
+    angabeBox.hidden = !a;
+    if (!a) return null;
+    const { feld, label } = angabeFeld(a, `${schl}:angabe`, `${schl}:angabe`);
+    feld.addEventListener("input", () => { pfadBestaetigt = false; });
+    tastenSenden(form, [feld], thread.pfad, quelle);
+    angabeEl = feld;
+    angabeBox.append(label, feld);
+    return a;
+  };
   const option = (wert, buchstabe, inhalt, empfohlen) => {
     const r = el("input", { type: "radio", name, value: wert, class: "vorschlag-radio", "data-fokus": `${schl}:wahl:${wert}` });
     r.checked = wahl === wert;
-    r.addEventListener("change", () => { entwurfSetzen(`${schl}:wahl`, wert); markieren(); });
+    r.addEventListener("change", () => { entwurfSetzen(`${schl}:wahl`, wert); markieren(); angabeZeichnen(); });
     const l = el("label", { class: "vorschlag" + (empfohlen ? " ist-empfohlen" : "") + (r.checked ? " gewaehlt" : "") },
       r, el("span", { class: "vorschlag-buchstabe", text: buchstabe }),
       el("span", { class: "vorschlag-text" }, inhalt,
@@ -1588,43 +1871,78 @@ function frageKarte({ thread, block, f }) {
   const optionen = f.vorschlaege.map((v) => option(v.buchstabe, v.buchstabe, v.text, v.buchstabe === f.empfohlen));
   if (f.vorschlaege.length) optionen.push(option("eigen", "–", "Eigene Antwort (im Feld unten)", false));
 
-  const form = el("form", { class: "antwort-form" },
+  const pfadHinweis = el("p", { class: "pfad-hinweis", role: "alert", hidden: true });
+  // novalidate: wir prüfen selbst und sagen warum; die Browser-Blase (pattern) blockierte stumm
+  const form = el("form", { class: "antwort-form", "data-quelle": quelle, novalidate: true },
     f.vorschlaege.length ? el("fieldset", { class: "vorschlaege" }, el("legend", { text: "Vorschläge" }), optionen) : null,
+    angabeBox,
+    pfadHinweis,
     f.empfehlung ? el("p", { class: "empfehlung" }, icon("stern"), el("span", {}, el("b", { text: "Empfehlung: " }), f.empfehlung)) : null,
     notiz,
+    atempauseZeile(thread.pfad, quelle),
     el("div", { class: "antwort-zeile" },
       el("label", { class: "haken-text" }, beschluss, el("span", {}, "als ", el("b", { text: "BESCHLUSS" }), " (schließt den Thread)")),
       el("div", { class: "antwort-knoepfe" }, zurueck, senden)),
   );
 
+  // Doppelantwort-Sperre: steht nach dieser FRAGE schon ein eigener Block (anderer Tab, anderes Gerät)?
+  const schonBeantwortet = (frisch) => {
+    const t2 = threadParsen(thread.slug, frisch);
+    const i = t2.bloecke.findIndex((b) => b.sorte === "FRAGE" && b.ki === block.ki && b.chat === block.chat && b.zeit === block.zeit);
+    const spaeter = i >= 0 ? t2.bloecke.slice(i + 1).find((b) => b.ki === ICH.ki) : null;
+    if (spaeter) throw new Hinweis(`${thread.nummer} ist schon beantwortet (${spaeter.sorte} ${zeitLesbar(spaeter.zeit)}). Nichts geschrieben – „Neu laden“ zeigt den Stand.`);
+  };
+
   const absenden = async (sorte) => {
+    if (zustand.wartet.has(thread.pfad)) { atempauseJetzt(thread.pfad); return; }
     const gewaehlt = form.querySelector(`input[name="${CSS.escape(name)}"]:checked`);
     const buchstabe = gewaehlt && gewaehlt.value !== "eigen" ? gewaehlt.value : "";
     const zusatz = notiz.value.trim();
     if (sorte !== "ZURUECK" && f.vorschlaege.length && !gewaehlt) { melden("Bitte einen Vorschlag wählen oder „Eigene Antwort“.", true); return; }
     if ((sorte === "ZURUECK" || !buchstabe) && !zusatz) { melden("Bitte im Feld schreiben, was du willst.", true); notiz.focus(); return; }
+    const a = sorte === "ZURUECK" ? null : angabeFuer(f, gewaehlt ? gewaehlt.value : "");
+    const angabeWert = a && angabeEl ? angabeEl.value.trim() : "";
+    if (a) {
+      const fehler = angabeFehler(a, angabeWert);
+      if (fehler) { melden(fehler, true); if (angabeEl) angabeEl.focus(); return; }
+      if (a.art === "pfad" && angabeWert && !pfadSiehtAus(angabeWert) && !pfadBestaetigt) {
+        pfadHinweis.replaceChildren("Sieht nicht wie ein Pfad aus (\\\\server\\freigabe oder E:\\…). Trotzdem senden? ",
+          el("button", { type: "button", class: "knopf zweit klein-knopf", onclick: () => { pfadBestaetigt = true; pfadHinweis.hidden = true; absenden(sorte); } }, "Trotzdem senden"));
+        pfadHinweis.hidden = false;
+        return;
+      }
+    }
+    pfadHinweis.hidden = true;
+    const felder = [{ el: notiz, entwurf: `${schl}:text` }];
+    if (angabeEl && a && a.art !== "datum") felder.push({ el: angabeEl, entwurf: `${schl}:angabe` });
+    if ((await pruefeVorSenden(felder, senden)) !== "senden") return;
     const bezug = `Zu FRAGE [${block.ki}/${block.chat}] ${block.zeit}`;
+    const zusatzJetzt = notiz.value.trim();
     let text;
     if (sorte === "ZURUECK") {
-      text = `${bezug}\nRückfrage\n\n${zusatz}`;
+      text = `${bezug}\nRückfrage\n\n${zusatzJetzt}`;
     } else {
       const v = f.vorschlaege.find((x) => x.buchstabe === buchstabe);
-      text = `${bezug}\nWahl: ${v ? `Vorschlag ${v.buchstabe}: ${v.text}` : "eigene Antwort"}` + (zusatz ? `\n\n${zusatz}` : "");
+      const angabeZeile = a && angabeEl && angabeEl.value.trim() ? `\n${ANGABE[a.art].zeile}: ${angabeEl.value.trim()}` : "";
+      text = `${bezug}\nWahl: ${v ? `Vorschlag ${v.buchstabe}: ${v.text}` : "eigene Antwort"}${angabeZeile}` + (zusatzJetzt ? `\n\n${zusatzJetzt}` : "");
       sorte = beschluss.checked ? "BESCHLUSS" : "ANTWORT";
     }
-    const geprueft = await geheimnisPruefen(text);
-    if (geprueft === null) { notiz.focus(); return; }
-    text = geprueft;
-    await threadSchreiben(thread.pfad, [senden, zurueck], async () => {
-      const r = await anhaengen(thread.pfad, sorte, text, `${thread.slug}: ${sorte} [${ICH.ki}/${ICH.chat}]`);
-      return () => {
-        entwuerfeLoeschen(schl + ":");
-        threadErsetzen(thread.pfad, r.text, r.sha);
-        melden(r.schonDa ? `${sorte} stand schon in ${thread.slug} (früherer Versuch kam an).` : `${sorte} in ${thread.slug} geschrieben.`);
-      };
+    atempauseStarten(thread.pfad, {
+      sorte, nummer: thread.nummer, slug: thread.slug, quelle, fokus: `${schl}:senden`,
+      knoepfe: [senden, zurueck],
+      arbeit: async () => {
+        const r = await anhaengen(thread.pfad, sorte, text, `${thread.slug}: ${sorte} [${ICH.ki}/${ICH.chat}]`, schonBeantwortet);
+        return () => {
+          entwuerfeLoeschen(schl + ":");
+          threadErsetzen(thread.pfad, r.text, r.sha);
+          melden(r.schonDa ? `${sorte} stand schon in ${thread.slug} (früherer Versuch kam an).` : `${sorte} in ${thread.slug} geschrieben.`);
+        };
+      },
     });
   };
   sperrenWennSchreibt(thread.pfad, [senden, zurueck]);
+  tastenSenden(form, [notiz], thread.pfad, quelle);
+  angabeZeichnen();
   form.addEventListener("submit", (e) => { e.preventDefault(); absenden("ANTWORT"); });
   zurueck.addEventListener("click", () => absenden("ZURUECK"));
 
@@ -1645,7 +1963,7 @@ function frageKarte({ thread, block, f }) {
 function sperrenWennSchreibt(pfad, knoepfe) {
   for (const k of knoepfe) {
     k.dataset.schreibt = pfad;
-    if (zustand.schreibt.has(pfad)) { k.disabled = true; k.setAttribute("aria-busy", "true"); }
+    if (zustand.schreibt.has(pfad) || zustand.wartet.has(pfad)) { k.disabled = true; k.setAttribute("aria-busy", "true"); }
   }
 }
 
@@ -2126,6 +2444,7 @@ function threadDetailZeichnen(slug) {
             el("time", { class: "meta", text: zeitLesbar(b.zeit) })),
           textBlock(b.text))))));
   }
+  angabenFehltZeichnen(t, blockAnker(t));
   for (const q of offeneFragen().filter((x) => x.thread === t)) ziel.append(frageKarte(q));
   ziel.append(beitragForm(t));
 }
@@ -2139,27 +2458,34 @@ function beitragForm(t) {
   const text = el("textarea", { placeholder: "Dein Beitrag …", "aria-label": "Beitrag", required: true, rows: 4, "data-fokus": `${schl}:text` });
   text.value = entwurf(`${schl}:text`);
   text.addEventListener("input", () => entwurfSetzen(`${schl}:text`, text.value));
-  const knopf = el("button", { type: "submit", class: "knopf" }, icon("senden"), "Anhängen");
-  const form = el("form", { class: "karte antwort-form beitrag" },
+  const quelle = `beitrag:${t.slug}`;
+  const knopf = el("button", { type: "submit", class: "knopf", "data-fokus": `${schl}:senden`, "aria-keyshortcuts": "Control+Enter Meta+Enter", title: "Senden (Strg+Enter)" }, icon("senden"), "Anhängen");
+  const form = el("form", { class: "karte antwort-form beitrag", "data-quelle": quelle },
     el("h3", {}, icon("notiz"), "Beitrag als betreiber/dashboard"),
     el("p", { class: "hinweis", text: "Wird unten an die Datei angehängt. BESCHLUSS schließt den Thread." }),
-    el("div", { class: "beitrag-zeile" }, sorte), text, el("div", { class: "antwort-knoepfe" }, knopf));
+    el("div", { class: "beitrag-zeile" }, sorte), text, atempauseZeile(t.pfad, quelle), el("div", { class: "antwort-knoepfe" }, knopf));
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (zustand.wartet.has(t.pfad)) { atempauseJetzt(t.pfad); return; }
     if (!text.value.trim()) return;
+    if ((await pruefeVorSenden([{ el: text, entwurf: `${schl}:text` }], knopf)) !== "senden") return;
     const geschrieben = sorte.value;
-    const inhalt = await geheimnisPruefen(text.value);
-    if (inhalt === null) { text.focus(); return; }
-    await threadSchreiben(t.pfad, [knopf], async () => {
-      const r = await anhaengen(t.pfad, geschrieben, inhalt, `${t.slug}: ${geschrieben} [${ICH.ki}/${ICH.chat}]`);
-      return () => {
-        entwuerfeLoeschen(schl + ":");
-        threadErsetzen(t.pfad, r.text, r.sha);
-        melden(r.schonDa ? `${geschrieben} stand schon in ${t.slug} (früherer Versuch kam an).` : `${geschrieben} in ${t.slug} geschrieben.`);
-      };
+    const inhalt = text.value;
+    atempauseStarten(t.pfad, {
+      sorte: geschrieben, nummer: t.nummer, slug: t.slug, quelle, fokus: `${schl}:senden`,
+      knoepfe: [knopf],
+      arbeit: async () => {
+        const r = await anhaengen(t.pfad, geschrieben, inhalt, `${t.slug}: ${geschrieben} [${ICH.ki}/${ICH.chat}]`);
+        return () => {
+          entwuerfeLoeschen(schl + ":");
+          threadErsetzen(t.pfad, r.text, r.sha);
+          melden(r.schonDa ? `${geschrieben} stand schon in ${t.slug} (früherer Versuch kam an).` : `${geschrieben} in ${t.slug} geschrieben.`);
+        };
+      },
     });
   });
   sperrenWennSchreibt(t.pfad, [knopf]);
+  tastenSenden(form, [text], t.pfad, quelle);
   return form;
 }
 
@@ -2216,7 +2542,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-10";
+const FASSUNG = "2026.10.03-11";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
@@ -2304,6 +2630,7 @@ function verdrahten() {
     zustand.threads = [];
     zustand.roadmap = null;
     zustand.gateOk = false;
+    for (const pfad of [...zustand.wartet.keys()]) atempauseAbbrechen(pfad, true);
     zustand.laufend.clear();
     zustand.schreibt.clear();
     zustand.neu = null;
@@ -2314,7 +2641,7 @@ function verdrahten() {
     try {
       for (const k of Object.keys(sessionStorage)) if (k.startsWith("blob:")) sessionStorage.removeItem(k);
     } catch (_) { /* gesperrt */ }
-    for (const id of ["zug-neu", "zug-warnung", "zug-lage", "fragen-liste", "aufgaben-liste", "zuletzt-box", "roadmap-gesamt", "roadmap-fluss",
+    for (const id of ["zug-neu", "zug-waechter", "zug-lage", "fragen-liste", "aufgaben-liste", "zuletzt-box", "roadmap-gesamt", "roadmap-fluss",
       "roadmap-meilensteine", "roadmap-ready-box", "roadmap-extra", "thread-liste", "thread-detail"]) $(id).replaceChildren();
     document.title = SEITENTITEL;
     $("kopf-unter").textContent = "CORE-Forum · Roadmap 0.9.0b1 → 1.0";
@@ -2334,12 +2661,14 @@ function verdrahten() {
   });
   // Puls: beim Zurückkommen (Tab, Fenster, iOS-Rückkehr aus dem Speicher) und alle 90 s.
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") { puls(); return; }
+    if (document.visibilityState === "visible") { nichtGesendetMelden(); puls(); return; }
+    atempausenVerwerfen();
     // Verlassen nach ≥ 5 s mit sichtbarer Karte „Seit deinem letzten Besuch“: als gesehen merken.
     if (neuSichtbarSeit && Date.now() - neuSichtbarSeit >= 5000) gesehenSetzen(zustand.kopf);
   });
   window.addEventListener("focus", () => puls());
-  window.addEventListener("pageshow", (e) => { if (e.persisted) puls(); });
+  window.addEventListener("pageshow", (e) => { if (e.persisted) { nichtGesendetMelden(); puls(); } });
+  window.addEventListener("pagehide", () => atempausenVerwerfen());
   const pulsTakt = () => { puls(); setTimeout(pulsTakt, 90000); };
   setTimeout(pulsTakt, 90000);
   $("neu-anzeigen").addEventListener("click", () => { $("neu-balken").hidden = true; starten(); });
@@ -2369,7 +2698,7 @@ function verdrahten() {
   });
 
   zustand.token = speicherLesen(TOKEN_SCHLUESSEL);
-  if (zustand.token) starten(); else zeigen("anmeldung");
+  if (zustand.token) starten().then(nichtGesendetMelden); else zeigen("anmeldung");
 }
 
 if (fassungPruefen()) verdrahten();

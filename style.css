@@ -2,7 +2,7 @@
  * Farben nur als Tokens; hell, dunkel (System oder Schalter) und Windows-Kontrastmodus. */
 
 :root {
-  --pult-version: "2026.10.03-10";
+  --pult-version: "2026.10.03-11";
   --grund: #f3f5f8;
   --flaeche: #ffffff;
   --flaeche-2: #f2f5f9;
@@ -407,7 +407,40 @@ a.neu-text:hover .neu-titel { text-decoration: underline; }
 
 /* ---------- Geheimnis-Wächter ---------- */
 
-.warnung { margin-bottom: 14px; padding: 16px 18px; border-color: color-mix(in srgb, var(--fehler) 45%, var(--linie)); background: color-mix(in srgb, var(--fehler) 6%, var(--flaeche)); }
+.warnhinweis { margin-bottom: 14px; padding: 16px 18px; border-color: color-mix(in srgb, var(--fehler) 45%, var(--linie)); background: color-mix(in srgb, var(--fehler) 6%, var(--flaeche)); }
+.warnhinweis h2:focus { outline: none; }
+.waechter-zeile { flex-wrap: wrap; }
+.waechter-knoepfe { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+
+/* Angaben „im Feld“ */
+.angabe { display: grid; gap: 4px; }
+.angabe label { font-weight: 650; font-size: 0.88rem; color: var(--text-leise); }
+.angabe input { max-width: 520px; }
+input.mono { font-family: var(--mono); }
+input[type="date"] {
+  width: auto; min-width: 180px; padding: 8px 10px; border: 1px solid var(--linie-stark); border-radius: var(--radius-klein);
+  background: var(--flaeche); color: var(--text); font: inherit;
+}
+.pfad-hinweis { margin: 0; padding: 8px 12px; border-radius: 10px; background: var(--teil-hell); color: var(--text); }
+.angabe-fehlt { display: grid; gap: 10px; margin-left: 48px; border-color: color-mix(in srgb, var(--zug) 45%, var(--linie)); background: color-mix(in srgb, var(--zug) 5%, var(--flaeche)); }
+.angabe-fehlt > p { margin: 0; }
+.angabe-fehlt > p .ic { color: var(--zug); }
+
+/* Atempause */
+.atempause {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0;
+  padding: 8px 10px 8px 14px; border-radius: 10px; background: var(--akzent-hell); color: var(--text); font-weight: 600;
+}
+.atempause-sek { font-variant-numeric: tabular-nums; min-width: 1ch; text-align: center; }
+.atempause-knoepfe { display: inline-flex; gap: 6px; margin-left: auto; }
+.sr-nur {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.dialog-knoepfe .knopf { min-height: 44px; }
+@media (max-width: 400px) {
+  .dialog-knoepfe { flex-direction: column-reverse; align-items: stretch; }
+}
 .warn-ic {
   display: grid; place-items: center; width: 38px; height: 38px; flex: none; border-radius: 11px;
   background: color-mix(in srgb, var(--fehler) 14%, var(--flaeche)); color: var(--fehler);
