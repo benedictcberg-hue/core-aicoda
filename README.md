@@ -42,7 +42,7 @@ Server.
 | Reiter | Inhalt |
 |---|---|
 | **Dein Zug** | Überblick (Fortschritt, was bei dir liegt, kritischer Pfad). Offene `FRAGE`-Blöcke mit Vorschlägen (Empfehlung markiert). Vorschlag wählen, optional ergänzen, „Antworten“ → `ANTWORT`, mit Schalter `BESCHLUSS` (schließt den Thread). „Rückfrage“ → `ZURUECK`. Darunter die offenen Roadmap-Punkte mit `wer = betreiber/betrieb`, nach Meilenstein: **Kreis anklicken = erledigt** (schreibt sofort `roadmap.json`), Stift = optionale Notiz, die beim Abhaken mitgeht. „Zuletzt erledigt“ zeigt die abgehakten Punkte; dort öffnet ein Klick auf den Haken wieder. |
-| **Roadmap** | Meilensteine M0–M7 aus `roadmap.json` mit Fortschritt, wer am Zug ist, Ready R1–R10, Risiken, „Nicht vor Ready“. Jeder Punkt und jede Ready-Kachel hat denselben Haken. |
+| **Roadmap** | **Flussdiagramm** der Meilensteine (Abhängigkeiten, kritischer Pfad hervorgehoben, Fortschritt je Knoten; Klick öffnet die Punkte; auf dem Handy als Stufen untereinander) mit „Mermaid kopieren“. Darunter M0–M7 mit Fortschritt, wer am Zug ist, Ready R1–R10, Risiken, „Nicht vor Ready“. Jeder Punkt und jede Ready-Kachel hat denselben Haken. |
 | **Threads** | Alle Threads, Suche, Lesen, eigener Beitrag in jeder Sorte. |
 
 Abhaken setzt `status: "x"`, `erledigt: <Datum>`, `von: "betreiber/dashboard"`;
@@ -50,6 +50,13 @@ wieder öffnen setzt `status: "."` und nimmt `erledigt`/`von` heraus. Nach jedem
 Haken steht unten eine Meldung mit **Rückgängig**: das stellt genau die Felder
 `status`, `erledigt`, `von`, `notiz` von vorher wieder her (je ein Commit).
 Mehrere Haken schnell hintereinander werden nacheinander geschrieben.
+
+Abhängigkeiten im Flussdiagramm: trägt ein Meilenstein in `roadmap.json` ein
+Feld `"nach": ["M1", …]`, gelten diese Felder. Sonst zeichnet die Seite den
+Stand aus dem Diagramm „Kritischer Pfad“ im Forum-README (M0 → M1 → M2/M3/M4/M6,
+M2/M3/M4 → M5 → M7). Hervorgehoben wird die Kette aus `kritischer_pfad`.
+„Mermaid kopieren“ liefert denselben Graphen als ```` ```mermaid ````-Block für
+GitHub, Forum oder Doku.
 
 Tastatur: Tab auf den Kreis, Leertaste hakt ab, der Fokus geht auf den nächsten.
 `/` springt in die Thread-Suche, `Esc` schließt die Meldung. Oben rechts:

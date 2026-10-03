@@ -541,6 +541,79 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
 .risiken .ic { color: var(--teil); margin-top: 0.2em; vertical-align: 0; }
 .park { margin: 0; }
 
+/* ---------- Roadmap als Flussdiagramm ---------- */
+
+.fluss { margin-bottom: 18px; padding: 16px 18px 14px; }
+.fluss-leiste { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; }
+.fluss-leiste h2 { display: flex; align-items: center; gap: 8px; }
+.fluss-leiste h2 > .ic { color: var(--text-leise); }
+.klein-knopf { padding: 5px 12px; font-size: 0.86rem; }
+.fluss-rahmen { overflow-x: auto; margin: 14px -18px 0; padding: 6px 18px 12px; }
+.fluss-flaeche { position: relative; margin: 0 auto; }
+.fluss-kanten { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.fluss-kante { fill: none; stroke: var(--linie-stark); stroke-width: 1.6; }
+.fluss-kante.kritisch { stroke: var(--akzent); }
+.fluss-kante.fertig { stroke: var(--ok-voll); }
+.fluss-kante.ist-kritisch { stroke-width: 3; }
+.fluss-spitze { fill: var(--linie-stark); }
+.fluss-spitze.kritisch { fill: var(--akzent); }
+.fluss-spitze.fertig { fill: var(--ok-voll); }
+
+.fluss-knoten {
+  position: absolute; display: flex; flex-direction: column; gap: 5px; text-align: left;
+  padding: 9px 12px 10px; border: 1px solid var(--linie); border-left-width: 4px; border-radius: 12px;
+  background: var(--flaeche); color: var(--text); font: inherit; cursor: pointer;
+  box-shadow: var(--schatten-1); transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+}
+.fluss-knoten:hover { transform: translateY(-1px); box-shadow: var(--schatten-2); }
+.fluss-knoten.ms-fertig { border-left-color: var(--ok-voll); }
+.fluss-knoten.ms-teil { border-left-color: var(--teil); }
+.fluss-knoten.ms-offen { border-left-color: var(--linie-stark); }
+.fluss-knoten.kritisch { box-shadow: 0 0 0 2px var(--akzent-hell), var(--schatten-1); border-top-color: var(--akzent); border-right-color: var(--akzent); border-bottom-color: var(--akzent); }
+.fluss-kopf { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.fluss-kopf .marke { font-size: 0.72rem; padding: 0 7px; }
+.fluss-kopf .ms-id { padding: 1px 7px; min-width: 0; font-size: 0.76rem; }
+.fluss-titel {
+  flex: 1; font-weight: 650; font-size: 0.9rem; line-height: 1.3; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+}
+.fluss-nach { color: var(--text-blass); font-size: 0.74rem; font-family: var(--mono); }
+.fluss-flaeche .fluss-nach { display: none; }
+.fluss-fuss { display: flex; align-items: center; gap: 8px; }
+
+.fluss-stufen { list-style: none; margin: 14px 0 4px; padding: 0; display: grid; gap: 26px; }
+.fluss-stufe { position: relative; }
+.fluss-stufe + .fluss-stufe::before {
+  content: ""; position: absolute; left: 50%; top: -22px; width: 2px; height: 16px; margin-left: -1px;
+  background: var(--akzent); border-radius: 2px;
+}
+.fluss-stufe + .fluss-stufe::after {
+  content: ""; position: absolute; left: 50%; top: -9px; margin-left: -5px;
+  border: 5px solid transparent; border-top: 6px solid var(--akzent); border-bottom: 0;
+}
+.stufe-name { display: block; margin-bottom: 6px; color: var(--text-leise); font-size: 0.74rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+.stufe-knoten { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.fluss-stufe:not(.parallel) .stufe-knoten { grid-template-columns: 1fr; }
+.fluss-stufen .fluss-knoten { position: relative; min-height: 104px; }
+.fluss-fuss .fortschritt { flex: 1; height: 6px; }
+.fluss-zahl { color: var(--text-leise); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+
+.fluss-legende { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; color: var(--text-leise); font-size: 0.8rem; }
+.fluss-legende span { display: inline-flex; align-items: center; gap: 6px; }
+.strich { display: inline-block; width: 22px; height: 0; border-top: 2px solid var(--linie-stark); }
+.strich.kritisch { border-top: 3px solid var(--akzent); }
+.strich.fertig { border-top-color: var(--ok-voll); }
+.punkt-farbe { display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--linie-stark); }
+.punkt-farbe.fertig { background: var(--ok-voll); }
+.punkt-farbe.teil { background: var(--teil); }
+.fluss-quelle { color: var(--text-blass); }
+.mermaid-box { margin-top: 10px; }
+.mermaid-box > summary { display: inline-flex; align-items: center; gap: 6px; color: var(--text-leise); font-size: 0.86rem; font-weight: 600; }
+.mermaid-box > summary:hover { color: var(--text); }
+.mermaid-box > summary .chevron { transform: rotate(-90deg); }
+.mermaid-box[open] > summary .chevron { transform: rotate(0deg); }
+.mermaid-text { max-height: 320px; padding: 10px 12px; background: var(--flaeche-2); border: 1px solid var(--linie); border-radius: 10px; }
+
 /* ---------- Threads ---------- */
 
 .filter { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 14px; }
@@ -659,6 +732,9 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
   .reiter a > .ic { display: none; }
   main { padding: 14px 12px 48px; }
   .karte { padding: 14px; }
+  .fluss { padding: 14px; }
+  .fluss-rahmen { margin: 12px -14px 0; padding: 6px 14px 12px; }
+  .stufe-knoten { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lage, .rm-kopf { gap: 14px; padding: 14px; align-items: flex-start; }
   .ring-box { width: 60px; height: 60px; }
   .ring-zahl { font-size: 0.88rem; }
@@ -698,6 +774,11 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
   .schalter::before { background: CanvasText; }
   .schalter:checked { background: Highlight; }
   .vorschlag.gewaehlt { outline: 2px solid Highlight; }
+  .fluss-kante, .fluss-kante.kritisch, .fluss-kante.fertig { stroke: CanvasText; }
+  .fluss-spitze, .fluss-spitze.kritisch, .fluss-spitze.fertig { fill: CanvasText; }
+  .fluss-stufe + .fluss-stufe::before { background: CanvasText; }
+  .fluss-stufe + .fluss-stufe::after { border-top-color: CanvasText; }
+  .fluss-knoten.kritisch { border-color: Highlight; }
   .logo-grund { fill: CanvasText; }
   .logo-strich, .logo-haken { stroke: Canvas; }
 }
