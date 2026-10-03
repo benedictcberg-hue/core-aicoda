@@ -819,6 +819,63 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
   .meldung { bottom: 12px; }
 }
 
+/* ---------- Als App (Home-Bildschirm, eigenes Fenster) ---------- */
+
+.app-hinweis > summary { margin-top: 2px; }
+.app-schritte { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; color: var(--text-leise); font-size: 0.88rem; }
+.app-schritte b { color: var(--text); }
+.anmeldung .app-hinweis { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--linie); }
+.fuss .app-hinweis { flex-basis: 100%; text-align: center; }
+.fuss .app-hinweis > summary { font-size: inherit; color: var(--text-blass); }
+.fuss .app-hinweis > summary:hover { color: var(--text); }
+.fuss .app-schritte { display: inline-grid; max-width: 560px; text-align: left; font-size: inherit; }
+
+/* viewport-fit=cover: die Seite reicht unter Kerbe (Querformat) und Home-Balken. Dort einrücken,
+ * auch im Safari-Tab; ohne Kerbe ist env() 0 und der gewohnte Rand bleibt. */
+.kopf-innen, main, .fuss { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+.reiter { padding-left: max(10px, env(safe-area-inset-left)); padding-right: max(10px, env(safe-area-inset-right)); }
+.fuss { padding-bottom: max(24px, env(safe-area-inset-bottom)); }
+.meldung { bottom: max(20px, env(safe-area-inset-bottom)); }
+@media (max-width: 640px) {
+  .kopf-innen, main { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+  .reiter { padding-left: max(4px, env(safe-area-inset-left)); padding-right: max(4px, env(safe-area-inset-right)); }
+  .meldung { bottom: max(12px, env(safe-area-inset-bottom)); }
+}
+
+@media (display-mode: standalone) {
+  .kopf-innen { padding-top: max(12px, env(safe-area-inset-top)); }
+}
+
+/* Daumenleiste: nur als App. Im Safari-Tab stieße sie mit Safaris eigener Leiste zusammen. */
+@media (display-mode: standalone) and (max-width: 640px) {
+  html { scroll-padding-top: calc(76px + env(safe-area-inset-top)); scroll-padding-bottom: calc(72px + env(safe-area-inset-bottom)); }
+  /* backdrop-filter macht den Kopf zum Bezugsrahmen für position: fixed; die Leiste klebte sonst am Kopf. */
+  .kopf { background: var(--grund); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .reiter {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0;
+    max-width: none; margin: 0; overflow: visible;
+    padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    background: var(--flaeche); border-top: 1px solid var(--linie);
+  }
+  .reiter a {
+    position: relative; flex-direction: column; justify-content: center; gap: 3px;
+    min-height: 56px; margin: -1px 0 0; padding: 7px 4px 6px;
+    font-size: 0.74rem; border-bottom: 0; border-top: 2px solid transparent; border-radius: 0;
+  }
+  .reiter a > .ic { display: block; width: 22px; height: 22px; }
+  .reiter a:hover { background: transparent; }
+  .reiter a.aktiv { color: var(--akzent); border-top-color: var(--akzent); }
+  .reiter .zaehler {
+    position: absolute; top: 5px; left: calc(50% + 7px);
+    min-width: 1.55em; padding: 0 5px; font-size: 0.68rem; box-shadow: 0 0 0 2px var(--flaeche);
+  }
+  .reiter .zaehler.leise { display: none; }
+  main { padding-bottom: calc(72px + env(safe-area-inset-bottom)); }
+  .fuss { padding-bottom: calc(82px + env(safe-area-inset-bottom)); }
+  .meldung { bottom: calc(72px + env(safe-area-inset-bottom)); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
@@ -844,4 +901,5 @@ a.kennzahl:hover { color: inherit; border-color: var(--akzent); transform: trans
   .fluss-knoten.kritisch { border-color: Highlight; }
   .logo-grund { fill: CanvasText; }
   .logo-strich, .logo-haken { stroke: Canvas; }
+  .reiter a[aria-current="page"] { border-color: Highlight; }
 }
