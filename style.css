@@ -2,6 +2,7 @@
  * Farben nur als Tokens; hell, dunkel (System oder Schalter) und Windows-Kontrastmodus. */
 
 :root {
+  --pult-version: "2026.10.03-6";
   --grund: #f3f5f8;
   --flaeche: #ffffff;
   --flaeche-2: #f2f5f9;
@@ -255,6 +256,7 @@ textarea { min-height: 72px; resize: vertical; line-height: 1.5; }
 /* ---------- Seite ---------- */
 
 main { width: 100%; max-width: var(--breite); margin: 0 auto; padding: 20px 16px 56px; flex: 1; }
+main:focus { outline: none; }
 .ansicht { animation: rein 0.18s ease-out; }
 .abschnitt-kopf { margin: 30px 0 12px; }
 .abschnitt-kopf.erster, .ansicht > .abschnitt-kopf:first-child { margin-top: 4px; }
