@@ -104,7 +104,7 @@ const ICONS = {
 
 function icon(name, klasse) {
   const svg = svgEl("svg", { viewBox: "0 0 24 24", class: "ic" + (klasse ? " " + klasse : ""), "aria-hidden": "true", focusable: "false" });
-  for (const teil of ICONS[name] || []) {
+  for (const teil of Object.prototype.hasOwnProperty.call(ICONS, name) ? ICONS[name] : []) {
     let k;
     if (typeof teil === "string") k = svgEl("path", { d: teil });
     else if (teil.pfad) k = svgEl("path", { d: teil.pfad });
@@ -267,15 +267,19 @@ async function gh(pfad, optionen = {}) {
   return antwort.status === 204 ? null : antwort.json();
 }
 
+/* Je Segment kodieren: encodeURI ließe ? und # stehen, und ein solcher Dateiname leitete
+ * Lesen und Schreiben in eine andere Datei um. */
+const pfadUrl = (pfad) => pfad.split("/").map(encodeURIComponent).join("/");
+
 async function dateiLesen(pfad) {
-  const d = await gh(`/contents/${encodeURI(pfad)}?ref=${encodeURIComponent(ZWEIG)}`);
+  const d = await gh(`/contents/${pfadUrl(pfad)}?ref=${encodeURIComponent(ZWEIG)}`);
   return { text: b64ZuText(d.content), sha: d.sha };
 }
 
 async function dateiSchreiben(pfad, text, sha, meldung) {
   const koerper = { message: meldung, content: textZuB64(text), branch: ZWEIG };
   if (sha) koerper.sha = sha;
-  const r = await gh(`/contents/${encodeURI(pfad)}`, { method: "PUT", body: JSON.stringify(koerper) });
+  const r = await gh(`/contents/${pfadUrl(pfad)}`, { method: "PUT", body: JSON.stringify(koerper) });
   return r.content.sha;
 }
 
@@ -369,7 +373,8 @@ function frageParsen(block) {
     let m;
     if ((m = /^Vorschlag ([A-Z]): (.+)$/.exec(zeile))) vorschlaege.push({ buchstabe: m[1], text: m[2] });
     else if ((m = /^Empfehlung: (.+)$/.exec(zeile))) empfehlung = m[1];
-    else if ((m = /^Roadmap: (.+)$/.exec(zeile))) roadmap.push(...m[1].split(/\s*[·,]\s*/).filter(Boolean));
+    // linear teilen: \s*[·,]\s* lief auf langen Leerzeichen-Zeilen quadratisch (Pult fror ein)
+    else if ((m = /^Roadmap: (.+)$/.exec(zeile))) roadmap.push(...m[1].split(/[·,]/).map((x) => x.trim()).filter(Boolean));
     else rest.push(zeile);
   }
   const absaetze = rest.join("\n").trim().split(/\n\s*\n/);
@@ -433,7 +438,8 @@ async function laden() {
     $("lade-text").textContent = "Lade Verzeichnis …";
     const baum = await gh(`/git/trees/${encodeURIComponent(ZWEIG)}?recursive=1`);
     const dateien = baum.tree.filter((e) => e.type === "blob");
-    const threadDateien = dateien.filter((e) => /^threads\/[^/]+\.txt$/.test(e.path)
+    // dieselbe Regel wie forum.py (SLUG): nur a–z, 0–9 und Bindestrich
+    const threadDateien = dateien.filter((e) => /^threads\/[a-z0-9]+(?:-[a-z0-9]+)*\.txt$/.test(e.path)
       && !NICHT_THREADS.includes(e.path.slice("threads/".length)));
     const roadmapDatei = dateien.find((e) => e.path === "roadmap.json");
 
@@ -472,7 +478,7 @@ async function laden() {
     } else if (kaputt) {
       melden(`roadmap.json ist kein gültiges JSON: ${kaputt.message}${zustand.roadmap ? " — angezeigt wird der letzte gute Stand." : ""}`, true);
     } else {
-      zustand.roadmap = roadmap;
+      zustand.roadmap = roadmap === null ? null : roadmapSauber(roadmap);
       zustand.roadmapSha = roadmapSha;
     }
     zustand.geladen = new Date();
@@ -493,6 +499,37 @@ async function laden() {
   $("fuss-stand").textContent = `geladen ${uhr}`;
   $("neu-laden").title = `Neu laden (zuletzt ${uhr})`;
   allesZeichnen();
+}
+
+/* roadmap.json pflegen KIs von Hand. Für die Anzeige nur, was die erwartete Form hat: ein
+ * falsch typisiertes Feld darf nicht das ganze Pult anhalten. Geschrieben wird immer aus der
+ * frisch gelesenen Datei selbst (roadmapAendern), nie aus dieser Kopie. */
+function roadmapSauber(rm) {
+  const ist = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  if (!ist(rm)) return null;
+  const text = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v));
+  const wahl = (v) => (v === undefined || v === null ? undefined : text(v));
+  const liste = (v) => (Array.isArray(v) ? v : []);
+  let ohneId = 0;
+  const id = (v) => (v === undefined || v === null || v === "" ? `ohne-id-${++ohneId}` : text(v));
+  const status = (v) => (v === "x" || v === "~" || v === "." ? v : ".");
+  const punkt = (p) => ({
+    id: id(p.id), titel: text(p.titel), status: status(p.status), wer: text(p.wer),
+    notiz: wahl(p.notiz), frage: wahl(p.frage), thread: wahl(p.thread), erledigt: wahl(p.erledigt), von: wahl(p.von),
+  });
+  return {
+    stand: text(rm.stand), basis: text(rm.basis), quelle: text(rm.quelle), produkt: text(rm.produkt),
+    ziel: text(rm.ziel), kritischer_pfad: text(rm.kritischer_pfad),
+    legende: ist(rm.legende) && ist(rm.legende.wer) ? { wer: rm.legende.wer } : undefined,
+    meilensteine: liste(rm.meilensteine).filter(ist).map((m) => ({
+      id: id(m.id), titel: text(m.titel),
+      nach: Array.isArray(m.nach) ? m.nach.map(text) : undefined,
+      punkte: liste(m.punkte).filter(ist).map(punkt),
+    })),
+    ready: liste(rm.ready).filter(ist).map((r) => ({ id: id(r.id), titel: text(r.titel), status: status(r.status), fehlt: wahl(r.fehlt) })),
+    risiken: liste(rm.risiken).map(text),
+    nicht_vor_ready: liste(rm.nicht_vor_ready).map(text),
+  };
 }
 
 function kopfSetzen() {
@@ -629,11 +666,12 @@ const anzeigeStatus = (eintrag) => (zustand.laufend.has(eintrag.id) ? zustand.la
 
 function werText(wer) {
   const legende = zustand.roadmap && zustand.roadmap.legende && zustand.roadmap.legende.wer;
-  return (legende && legende[wer]) || WER[wer] || wer || "?";
+  const eigen = legende && Object.prototype.hasOwnProperty.call(legende, wer) && typeof legende[wer] === "string" ? legende[wer] : "";
+  return eigen || (Object.prototype.hasOwnProperty.call(WER, wer) ? WER[wer] : "") || wer || "?";
 }
 function werMarke(wer, fertig) {
   const art = wer === "code" ? "" : fertig ? "ok" : "zug";
-  return el("span", { class: `marke ${art}`.trim() }, icon(WER_ICON[wer] || "info"), werText(wer));
+  return el("span", { class: `marke ${art}`.trim() }, icon(Object.prototype.hasOwnProperty.call(WER_ICON, wer) ? WER_ICON[wer] : "info"), werText(wer));
 }
 function leer(ic, titel, text) {
   return el("div", { class: "leer" }, icon(ic, "leer-ic"),
@@ -692,7 +730,7 @@ async function roadmapAendern(id, art, aendern, betreff) {
   const token = zustand.token;
   const uebernehmen = (rm, sha) => {
     if (zustand.token !== token) throw new Abgebrochen();
-    zustand.roadmap = rm;
+    zustand.roadmap = roadmapSauber(rm);
     zustand.roadmapSha = sha;
     if (ladeLauf) ladeLauf.roadmap = true;
   };
@@ -1302,7 +1340,8 @@ function flussGraph(rm) {
     schon.add(von + ">" + nach);
     kanten.push({ von, nach, kritisch: false });
   };
-  for (const m of ms) for (const v of (ausJson ? m.nach : FLUSS_VORGABE[m.id]) || []) kante(String(v), m.id);
+  const vorgabe = (id) => (Object.prototype.hasOwnProperty.call(FLUSS_VORGABE, id) ? FLUSS_VORGABE[id] : []);
+  for (const m of ms) for (const v of (ausJson ? m.nach : vorgabe(m.id)) || []) kante(String(v), m.id);
   const kette = kritischeKette(rm.kritischer_pfad, ids);
   for (let i = 0; i + 1 < kette.length; i++) kante(kette[i], kette[i + 1]);
   for (const k of kanten) {
@@ -1563,7 +1602,9 @@ function threadListeZeichnen() {
 }
 
 function textBlock(text) {
-  const breit = text.split("\n").some((z) => /[┌└│─+|]{3,}|^\s{2,}\S.*\s{3,}\S/.test(z));
+  // Zeilen über 400 Zeichen sind nie Tabellen; der Rest linear prüfen (kein .*\s{3,} mehr).
+  const breit = text.split("\n").some((z) => z.length <= 400
+    && (/[┌└│─+|]{3,}/.test(z) || (/^\s{2,}\S/.test(z) && /\S\s{3,}\S/.test(z.trimStart()))));
   return el("pre", { class: "text" + (breit ? " breit" : ""), text });
 }
 
@@ -1703,7 +1744,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-5";
+const FASSUNG = "2026.10.03-6";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
@@ -1786,6 +1827,12 @@ function verdrahten() {
     zustand.gateOk = false;
     zustand.laufend.clear();
     zustand.schreibt.clear();
+    // Die Seite verspricht „keine Forum-Inhalte“: Blob-Kopien und gezeichnete Ansichten mit weg.
+    try {
+      for (const k of Object.keys(sessionStorage)) if (k.startsWith("blob:")) sessionStorage.removeItem(k);
+    } catch (_) { /* gesperrt */ }
+    for (const id of ["zug-lage", "fragen-liste", "aufgaben-liste", "zuletzt-box", "roadmap-gesamt", "roadmap-fluss",
+      "roadmap-meilensteine", "roadmap-ready-box", "roadmap-extra", "thread-liste", "thread-detail"]) $(id).replaceChildren();
     document.title = SEITENTITEL;
     $("kopf-unter").textContent = "CORE-Forum · Roadmap 0.9.0b1 → 1.0";
     for (const id of ["verbindung", "neu-laden", "abmelden", "reiter", "fuss"]) $(id).hidden = true;
