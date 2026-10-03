@@ -88,6 +88,8 @@ const ICONS = {
   ready: ["m3 7 2 2 4-4", "m3 17 2 2 4-4", "M13 7h8", "M13 12h8", "M13 17h8"],
   pause: [{ kreis: [12, 12, 9] }, "M10 15V9", "M14 15V9"],
   ok: [{ kreis: [12, 12, 9] }, "m8 12 3 3 5-6"],
+  fluss: [{ rechteck: [2, 4, 7, 6, 1.5] }, { rechteck: [15, 4, 7, 6, 1.5] }, { rechteck: [15, 14, 7, 6, 1.5] }, "M9 7h6", "M12 7v10h3"],
+  kopieren: [{ rechteck: [9, 9, 12, 12, 2] }, "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"],
 };
 
 function icon(name, klasse) {
@@ -1035,7 +1037,7 @@ function roadmapZeichnen() {
   const ms = $("roadmap-meilensteine");
   const readyBox = $("roadmap-ready-box");
   const extra = $("roadmap-extra");
-  for (const b of [gesamt, ms, readyBox, extra]) b.replaceChildren();
+  for (const b of [gesamt, $("roadmap-fluss"), ms, readyBox, extra]) b.replaceChildren();
   if (!rm) {
     $("roadmap-stand").textContent = "";
     ms.append(leer("info", "Keine roadmap.json im Forum."));
@@ -1059,23 +1061,22 @@ function roadmapZeichnen() {
       el("div", { class: "rm-kopf-text" },
         el("div", { class: "lage-ziel", text: rm.produkt ? `${rm.produkt} · ${rm.ziel || ""}` : rm.ziel || "Roadmap" }),
         el("div", { class: "lage-titel", text: `${fertig} von ${alle.length} Punkten fertig` }),
-        rm.kritischer_pfad ? el("p", { class: "lage-pfad" }, icon("roadmap"), el("span", {}, el("b", { text: "Kritischer Pfad: " }), rm.kritischer_pfad)) : null)),
+        el("p", { class: "hinweis", text: "Das Flussdiagramm zeigt, welcher Meilenstein auf welchem aufbaut. Klick auf einen Knoten öffnet seine Punkte." }))),
     el("div", { class: "kennzahlen" }, kacheln.map((k) => el(k.link ? "a" : "div", { class: "karte kennzahl", href: k.link },
       el("span", { class: `kennzahl-ic ${k.art}`.trim() }, icon(k.ic)),
       el("span", {}, el("span", { class: "kennzahl-wert", text: k.wert }), el("span", { class: "kennzahl-name", text: k.name }))))),
   );
 
+  flussZeichnen();
+
   const offeneSlugs = new Set(offeneFragen().map((q) => q.thread.slug));
   for (const m of rm.meilensteine || []) {
     const p = m.punkte || [];
-    const x = p.filter((q) => q.status === "x").length;
-    const t = p.filter((q) => q.status === "~").length;
-    const beiDir = p.filter((q) => istMeins(q) && q.status !== "x").length;
+    const { x, t, beiDir, stufe } = meilensteinZahlen(m);
     const breite = (n) => (p.length ? `${(n / p.length) * 100}%` : "0");
     const f1 = el("div", { class: "f-x" }); f1.style.width = breite(x);
     const f2 = el("div", { class: "f-t" }); f2.style.width = breite(t);
-    const stufe = p.length && x === p.length ? "fertig" : x || t ? "teil" : "offen";
-    const details = el("details", { class: `karte meilenstein ms-${stufe}` },
+    const details = el("details", { class: `karte meilenstein ms-${stufe}`, "data-ms": m.id },
       el("summary", {},
         el("span", { class: "ms-id", text: m.id }),
         el("span", { class: "ms-titel" }, el("span", { text: m.titel }),
@@ -1115,6 +1116,265 @@ function roadmapZeichnen() {
     extra.append(el("div", { class: "abschnitt-kopf" }, el("h2", {}, icon("pause"), "Nicht vor „Ready“"),
       el("p", { class: "hinweis", text: "Bewusst geparkt, bis 0.9.0b1 steht." })),
       el("div", { class: "marken park" }, rm.nicht_vor_ready.map((r) => el("span", { class: "marke leise", text: r }))));
+  }
+}
+
+/* --- Roadmap als Flussdiagramm --- */
+
+/* Abhängigkeiten der Meilensteine. roadmap.json kann sie selbst tragen
+ * (meilensteine[].nach = ["M1", …]); trägt kein Meilenstein ein „nach“, gilt der
+ * Stand aus dem Diagramm „Kritischer Pfad“ im Forum-README (03.10.2026). */
+const FLUSS_VORGABE = { M1: ["M0"], M2: ["M1"], M3: ["M1"], M4: ["M1"], M6: ["M1"], M5: ["M2", "M3", "M4"], M7: ["M5"] };
+const FLUSS = { hoehe: 112, zeilenAbstand: 16, spaltenAbstand: 44, minBreite: 148, maxBreite: 240, stufenUnter: 720 };
+
+function meilensteinZahlen(m) {
+  const p = m.punkte || [];
+  const x = p.filter((q) => q.status === "x").length;
+  const t = p.filter((q) => q.status === "~").length;
+  const beiDir = p.filter((q) => istMeins(q) && q.status !== "x").length;
+  const stufe = p.length && x === p.length ? "fertig" : x || t ? "teil" : "offen";
+  return { n: p.length, x, t, beiDir, stufe };
+}
+
+/* Kette aus „M0 → M1 → M2 → M5. Engpass …“: die längste Folge bekannter IDs. */
+function kritischeKette(text, ids) {
+  const teile = String(text || "").split("→");
+  let beste = [];
+  let jetzt = [];
+  teile.forEach((teil, i) => {
+    const woerter = teil.trim().split(/\s+/);
+    const wort = (i === 0 ? woerter[woerter.length - 1] : woerter[0]) || "";
+    const id = wort.replace(/[^\w-]+$/, "").replace(/^[^\w-]+/, "");
+    jetzt = ids.has(id) ? [...jetzt, id] : [];
+    if (jetzt.length > beste.length) beste = jetzt.slice();
+  });
+  return beste.length > 1 ? beste : [];
+}
+
+function flussGraph(rm) {
+  const ms = (rm.meilensteine || []).filter((m) => m && m.id);
+  const ids = new Set(ms.map((m) => m.id));
+  const ausJson = ms.some((m) => Array.isArray(m.nach));
+  const kanten = [];
+  const schon = new Set();
+  const kante = (von, nach) => {
+    if (!ids.has(von) || !ids.has(nach) || von === nach || schon.has(von + ">" + nach)) return;
+    schon.add(von + ">" + nach);
+    kanten.push({ von, nach, kritisch: false });
+  };
+  for (const m of ms) for (const v of (ausJson ? m.nach : FLUSS_VORGABE[m.id]) || []) kante(String(v), m.id);
+  const kette = kritischeKette(rm.kritischer_pfad, ids);
+  for (let i = 0; i + 1 < kette.length; i++) kante(kette[i], kette[i + 1]);
+  for (const k of kanten) {
+    const i = kette.indexOf(k.von);
+    k.kritisch = i >= 0 && kette[i + 1] === k.nach;
+  }
+
+  // Spalten: längster Weg von einem Anfang. Begrenzte Runden, damit ein Kreis nicht hängt.
+  const ebene = new Map(ms.map((m) => [m.id, 0]));
+  for (let runde = 0; runde < ms.length; runde++) {
+    let geaendert = false;
+    for (const k of kanten) {
+      if (ebene.get(k.nach) < ebene.get(k.von) + 1) { ebene.set(k.nach, ebene.get(k.von) + 1); geaendert = true; }
+    }
+    if (!geaendert) break;
+  }
+  // Zeilen: der kritische Knoten einer Spalte auf der Hauptlinie (0), der erste andere darüber, der Rest darunter.
+  const zeile = new Map();
+  const spalten = new Map();
+  for (const m of ms) {
+    const e = ebene.get(m.id);
+    if (!spalten.has(e)) spalten.set(e, []);
+    spalten.get(e).push(m.id);
+  }
+  for (const liste of spalten.values()) {
+    const krit = liste.find((id) => kette.includes(id));
+    const rest = liste.filter((id) => id !== krit);
+    if (krit) {
+      zeile.set(krit, 0);
+      rest.forEach((id, i) => zeile.set(id, i === 0 ? -1 : i));
+    } else {
+      rest.forEach((id, i) => zeile.set(id, i));
+    }
+  }
+  return { knoten: ms, kanten, kette, ebene, zeile, ausJson };
+}
+
+function flussZeichnen() {
+  const box = $("roadmap-fluss");
+  box.replaceChildren();
+  const rm = zustand.roadmap;
+  if (!rm || !(rm.meilensteine || []).length) return;
+  const g = flussGraph(rm);
+
+  const zahlen = new Map(g.knoten.map((m) => [m.id, meilensteinZahlen(m)]));
+  const vorgaenger = (id) => g.kanten.filter((k) => k.nach === id).map((k) => k.von);
+  const knoten = (m) => {
+    const z = zahlen.get(m.id);
+    const f1 = el("span", { class: "f-x" }); f1.style.width = z.n ? `${(z.x / z.n) * 100}%` : "0";
+    const f2 = el("span", { class: "f-t" }); f2.style.width = z.n ? `${(z.t / z.n) * 100}%` : "0";
+    const vor = vorgaenger(m.id);
+    return el("button", {
+      type: "button",
+      class: `fluss-knoten ms-${z.stufe}${g.kette.includes(m.id) ? " kritisch" : ""}`,
+      "aria-label": `${m.id} ${m.titel}: ${z.x} von ${z.n} fertig${z.beiDir ? `, ${z.beiDir} bei dir` : ""}${vor.length ? `, nach ${vor.join(", ")}` : ""}. Punkte zeigen`,
+      title: `${m.id} ${m.titel} · ${z.x}/${z.n} fertig`,
+      "data-fokus": `fluss:${m.id}`,
+      onclick: () => meilensteinZeigen(m.id),
+    },
+    el("span", { class: "fluss-kopf" },
+      el("span", { class: "ms-id", text: m.id }),
+      z.stufe === "fertig" ? el("span", { class: "marke ok" }, icon("haken"), "fertig")
+        : z.beiDir ? el("span", { class: "marke zug", text: `${z.beiDir} bei dir` }) : null),
+    el("span", { class: "fluss-titel", text: m.titel }),
+    vor.length ? el("span", { class: "fluss-nach", text: `nach ${vor.join(" · ")}` }) : null,
+    el("span", { class: "fluss-fuss" },
+      el("span", { class: "fortschritt" }, f1, f2),
+      el("span", { class: "fluss-zahl", text: `${z.x}/${z.n}` })));
+  };
+
+  const spalten = Math.max(...g.knoten.map((m) => g.ebene.get(m.id))) + 1;
+  // Breite aus dem Platz in <main>; die Ansicht kann gerade versteckt sein, <main> nie.
+  const main = $("inhalt");
+  const stil = getComputedStyle(main);
+  const platz = main.clientWidth - parseFloat(stil.paddingLeft) - parseFloat(stil.paddingRight) - 38;
+  // Stufen nur, wo es eng ist; bei vielen Spalten auf breitem Schirm lieber quer scrollen.
+  const breit = platz >= Math.min(spalten * FLUSS.minBreite + (spalten - 1) * FLUSS.spaltenAbstand, FLUSS.stufenUnter);
+
+  let bild;
+  if (breit) {
+    const zeilen = g.knoten.map((m) => g.zeile.get(m.id));
+    const oben = Math.min(...zeilen);
+    const reihen = Math.max(...zeilen) - oben + 1;
+    const breite = Math.max(FLUSS.minBreite, Math.min(FLUSS.maxBreite,
+      Math.floor((platz - (spalten - 1) * FLUSS.spaltenAbstand) / spalten)));
+    const gesamtB = spalten * breite + (spalten - 1) * FLUSS.spaltenAbstand;
+    const gesamtH = reihen * FLUSS.hoehe + (reihen - 1) * FLUSS.zeilenAbstand;
+    const lage = new Map(g.knoten.map((m) => [m.id, {
+      x: g.ebene.get(m.id) * (breite + FLUSS.spaltenAbstand),
+      y: (g.zeile.get(m.id) - oben) * (FLUSS.hoehe + FLUSS.zeilenAbstand),
+    }]));
+
+    const flaeche = el("div", { class: "fluss-flaeche" });
+    flaeche.style.width = `${gesamtB}px`;
+    flaeche.style.height = `${gesamtH}px`;
+
+    const svg = svgEl("svg", { class: "fluss-kanten", width: gesamtB, height: gesamtH, viewBox: `0 0 ${gesamtB} ${gesamtH}`, "aria-hidden": "true", focusable: "false" });
+    const defs = svgEl("defs");
+    for (const art of ["normal", "kritisch", "fertig"]) {
+      const marker = svgEl("marker", { id: `fluss-spitze-${art}`, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 9, markerHeight: 9, markerUnits: "userSpaceOnUse", orient: "auto" });
+      marker.append(svgEl("path", { d: "M0 0L10 5L0 10z", class: `fluss-spitze ${art}` }));
+      defs.append(marker);
+    }
+    svg.append(defs);
+    for (const k of g.kanten) {
+      const a = lage.get(k.von);
+      const b = lage.get(k.nach);
+      const x1 = a.x + breite;
+      const y1 = a.y + FLUSS.hoehe / 2;
+      const x2 = b.x - 2;
+      const y2 = b.y + FLUSS.hoehe / 2;
+      const knick = Math.max(x1, x2 - FLUSS.spaltenAbstand);
+      const d = y1 === y2
+        ? `M${x1} ${y1}H${x2}`
+        : `M${x1} ${y1}H${knick}C${knick + FLUSS.spaltenAbstand / 2} ${y1} ${x2 - FLUSS.spaltenAbstand / 2} ${y2} ${x2} ${y2}`;
+      const art = zahlen.get(k.von).stufe === "fertig" ? "fertig" : k.kritisch ? "kritisch" : "normal";
+      svg.append(svgEl("path", { d, class: `fluss-kante ${art}${k.kritisch ? " ist-kritisch" : ""}`, "marker-end": `url(#fluss-spitze-${art})` }));
+    }
+    flaeche.append(svg);
+
+    for (const m of g.knoten) {
+      const pos = lage.get(m.id);
+      const k = knoten(m);
+      k.style.left = `${pos.x}px`;
+      k.style.top = `${pos.y}px`;
+      k.style.width = `${breite}px`;
+      k.style.height = `${FLUSS.hoehe}px`;
+      flaeche.append(k);
+    }
+    bild = el("div", { class: "fluss-rahmen" }, flaeche);
+  } else {
+    // Schmal (Handy): Stufen von oben nach unten, parallele Meilensteine nebeneinander.
+    bild = el("ol", { class: "fluss-stufen" });
+    for (let e = 0; e < spalten; e++) {
+      const hier = g.knoten.filter((m) => g.ebene.get(m.id) === e)
+        .sort((a, b) => g.zeile.get(a.id) - g.zeile.get(b.id));
+      if (!hier.length) continue;
+      bild.append(el("li", { class: "fluss-stufe" + (hier.length > 1 ? " parallel" : "") },
+        el("span", { class: "stufe-name", text: `Stufe ${e + 1}${hier.length > 1 ? " · parallel" : ""}` }),
+        el("div", { class: "stufe-knoten" }, hier.map(knoten))));
+    }
+  }
+
+  const quelltext = mermaidText(rm, g);
+  const mermaidPre = el("pre", { class: "text breit mermaid-text", text: quelltext, tabindex: "0", "aria-label": "Mermaid-Quelltext" });
+  const mermaidBox = aufklappen(el("details", { class: "mermaid-box" },
+    el("summary", {}, icon("runter", "chevron"), "Mermaid-Quelltext (für GitHub, Forum, Doku)"), mermaidPre), "mermaid", false);
+  const kopieren = el("button", { type: "button", class: "knopf zweit klein-knopf", onclick: () => mermaidKopieren(quelltext, mermaidBox, mermaidPre) },
+    icon("kopieren"), "Mermaid kopieren");
+
+  box.append(el("section", { class: "karte fluss", "aria-label": "Roadmap als Flussdiagramm" },
+    el("div", { class: "fluss-leiste" },
+      el("h2", {}, icon("fluss"), "Flussdiagramm"),
+      kopieren),
+    rm.kritischer_pfad ? el("p", { class: "lage-pfad" }, icon("roadmap"), el("span", {}, el("b", { text: "Kritischer Pfad: " }), rm.kritischer_pfad)) : null,
+    bild,
+    el("div", { class: "fluss-legende", "aria-hidden": "true" },
+      el("span", {}, el("i", { class: "strich kritisch" }), "kritischer Pfad"),
+      el("span", {}, el("i", { class: "strich fertig" }), "Vorgänger fertig"),
+      el("span", {}, el("i", { class: "strich normal" }), "hängt ab von"),
+      el("span", {}, el("i", { class: "punkt-farbe fertig" }), "fertig"),
+      el("span", {}, el("i", { class: "punkt-farbe teil" }), "teilweise"),
+      el("span", {}, el("i", { class: "punkt-farbe offen" }), "offen"),
+      g.ausJson ? null : el("span", { class: "fluss-quelle", text: "Abhängigkeiten: Forum-README (roadmap.json trägt kein „nach“)" })),
+    mermaidBox));
+}
+
+function meilensteinZeigen(id) {
+  zustand.offen.set(`ms:${id}`, true);
+  const d = document.querySelector(`#roadmap-meilensteine details[data-ms="${CSS.escape(id)}"]`);
+  if (!d) return;
+  d.open = true;
+  d.scrollIntoView({ behavior: bewegungAus() ? "auto" : "smooth", block: "start" });
+  const s = d.querySelector("summary");
+  if (s) s.focus({ preventScroll: true });
+}
+
+function mermaidText(rm, g) {
+  const label = (t) => String(t).replace(/#/g, "#35;").replace(/"/g, "#quot;").replace(/</g, "#lt;").replace(/>/g, "#gt;");
+  const knotenId = (id) => String(id).replace(/[^A-Za-z0-9_]/g, "_");
+  const z = [
+    `%% Roadmap ${rm.produkt || ""} · Stand ${rm.stand || "?"} · erzeugt vom CORE Betreiber-Pult aus roadmap.json`.replace(/\s+·/g, " ·"),
+    "flowchart LR",
+  ];
+  for (const m of g.knoten) {
+    const zahl = meilensteinZahlen(m);
+    const extra = zahl.beiDir ? ` · ${zahl.beiDir} bei dir` : "";
+    z.push(`  ${knotenId(m.id)}["${label(m.id)} · ${label(m.titel)}<br/>${zahl.x}/${zahl.n} fertig${label(extra)}"]:::${zahl.stufe}`);
+  }
+  for (const k of g.kanten) z.push(`  ${knotenId(k.von)} ${k.kritisch ? "==>" : "-->"} ${knotenId(k.nach)}`);
+  z.push(
+    "  classDef fertig fill:#e1f3e8,stroke:#1f8a50,color:#17202c",
+    "  classDef teil fill:#fbefd6,stroke:#8a5a06,color:#17202c",
+    "  classDef offen fill:#edf0f4,stroke:#5f6876,color:#17202c",
+  );
+  return z.join("\n") + "\n";
+}
+
+async function mermaidKopieren(text, box, pre) {
+  try {
+    if (!navigator.clipboard || !window.isSecureContext) throw new Error("keine Zwischenablage");
+    await navigator.clipboard.writeText(text);
+    melden("Mermaid-Quelltext kopiert. In GitHub als ```mermaid-Block einfügen.");
+  } catch (_) {
+    box.open = true;
+    const auswahl = window.getSelection();
+    const bereich = document.createRange();
+    bereich.selectNodeContents(pre);
+    auswahl.removeAllRanges();
+    auswahl.addRange(bereich);
+    pre.focus();
+    melden("Quelltext ist markiert – mit Strg+C kopieren.");
   }
 }
 
@@ -1336,6 +1596,11 @@ $("neu-laden").addEventListener("click", () => starten());
 $("thread-suche").addEventListener("input", threadListeZeichnen);
 $("nur-offene").addEventListener("change", threadListeZeichnen);
 window.addEventListener("hashchange", () => { route(); window.scrollTo(0, 0); });
+let flussTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(flussTimer);
+  flussTimer = setTimeout(() => { if (zustand.roadmap) mitFokus(flussZeichnen); }, 150);
+});
 
 const meldung = $("meldung");
 meldung.addEventListener("mouseenter", () => clearTimeout(meldungTimer));
