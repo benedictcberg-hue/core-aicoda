@@ -20,7 +20,8 @@ Hier antwortet der Betreiber auf Fragen der KIs und sieht, wo die Roadmap
 ## Warum das Repo öffentlich sein darf
 
 Diese Seite enthält **keine Forum-Inhalte**. Sie ist eine leere Hülle
-(`index.html`, `app.js`, `thema.js`, `style.css`; dazu `fassung.py` zum Ausliefern). Alles Inhaltliche lädt sie zur Laufzeit
+(`index.html`, `app.js`, `thema.js`, `style.css`, für die App-Installation `manifest.webmanifest`
+und die Symbole `icon-*.png`, `apple-touch-icon.png`; dazu `fassung.py` zum Ausliefern). Alles Inhaltliche lädt sie zur Laufzeit
 aus dem privaten Forum, und zwar mit einem GitHub-Token, das der Betreiber
 selbst einträgt. Das Token liegt nur im Browser (localStorage, oder nur für
 die Sitzung) und geht ausschließlich an `api.github.com` (per
@@ -77,6 +78,29 @@ Direkt per Doppelklick (`file://`) geht es auch, dann teilen sich aber alle
 lokal geöffneten Dateien einen Browser-Speicher. Das Pult merkt sich den
 Token dort deshalb nicht von selbst (Haken „merken“ ist aus).
 
+## Als App (Home-Bildschirm, Taskleiste)
+
+Das Pult lässt sich installieren; es läuft dann in einem eigenen Fenster ohne Browser-Leisten.
+Der Hinweis „Als App installieren“ steht unter der Anmeldung und im Fuß:
+
+- **iPhone:** Teilen → „Zum Home-Bildschirm“. Die App hat einen **eigenen Speicher**: das Token
+  dort einmal neu eingeben und „merken“ anhaken. Grund: iOS-Safari löscht den localStorage einer
+  Seite, die 7 Tage nicht geöffnet wurde (das Token wäre weg, GitHub zeigt es nur einmal);
+  Web-Apps auf dem Home-Bildschirm sind davon ausgenommen.
+- **Edge:** Menü … → Apps → „Diese Website als App installieren“.
+- **Chrome:** Menü → Streamen, speichern und teilen → „Seite als App installieren“.
+
+Als App zeigt das Symbol in der Taskleiste (Windows, Edge/Chrome) dieselbe Zahl wie der Reiter
+„Dein Zug“; „Token entfernen“ löscht sie. Auf dem iPhone zeigt iOS solche Zahlen nur mit
+Benachrichtigungs-Erlaubnis, und die fragt das Pult bewusst nicht ab. Im Browser-Tab trägt das
+Favicon einen roten Punkt, solange eine Frage offen ist. Auf dem Handy liegen die Reiter als
+App unten als Daumenleiste; im normalen Safari-Tab nicht (dort stieße sie mit Safaris Leiste
+zusammen). Neu geladen wird ohne Wischgeste: der Puls holt beim Zurückkommen und alle 90 s nach.
+
+Bewusst **ohne Service Worker** und ohne Benachrichtigungen: offline gibt es ohne Token ohnehin
+nichts zu sehen, und nichts soll Forum-Inhalte zwischenspeichern. Die App startet immer auf
+`main` (`start_url` ohne `?branch=`); eine Vorschau gegen einen Zweig bleibt dem Browser-Tab.
+
 ## Neue Fassung ausliefern
 
 GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Damit nach einem
@@ -86,12 +110,19 @@ Update nie die neue `index.html` mit dem alten `app.js`/`style.css` zusammenkomm
 `style.css` und `FASSUNG` in `app.js`. Passt beim Start etwas nicht zusammen,
 lädt die Seite einmal frisch (`?neu=…`); hilft das nicht, sagt sie es oben.
 
-Bei **jeder** Änderung an `app.js`, `style.css` oder `thema.js` vor dem Commit:
+Bei **jeder** Änderung an `app.js`, `style.css`, `thema.js` oder `manifest.webmanifest` vor dem Commit:
 
 ```
 python fassung.py            # setzt Datum-Zähler an allen Stellen
 python fassung.py --pruefen  # 0 = alle Stellen gleich
 ```
+
+Das Manifest trägt seine Fassung ebenfalls (`manifest.webmanifest?v=…` in `index.html`), damit
+Edge und Chrome eine geänderte Fassung sicher neu holen; `--pruefen` zählt diese Stelle mit.
+Die Symbole (`icon-192.png`, `icon-512.png`, `icon-maskable-512.png`, `apple-touch-icon.png`)
+sind einmalig aus dem Logo in `index.html` erzeugt und eingecheckt, ohne Build-Schritt. Ändern
+sie sich, das Manifest mit ändern und eine neue Fassung setzen. iOS übernimmt Manifest und
+Symbole erst, wenn man die App neu zum Home-Bildschirm hinzufügt.
 
 ## Wie KIs fragen
 

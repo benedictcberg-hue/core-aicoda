@@ -1065,6 +1065,40 @@ function zaehlerSetzen() {
   $("zaehler-roadmap").textContent = alle.length ? `${alle.filter((p) => p.status === "x").length}/${alle.length}` : "";
   $("zaehler-threads").textContent = String(zustand.threads.filter((t) => !t.geschlossen).length);
   document.title = fragen + aufgaben ? `(${fragen + aufgaben}) ${SEITENTITEL}` : SEITENTITEL;
+  abzeichenSetzen(fragen + aufgaben);
+  faviconSetzen(fragen > 0);
+}
+
+/* --- Als App: Zahl am Symbol (Taskleiste, Home-Bildschirm), Punkt im Favicon --- */
+
+/* Zahl wie am Reiter. Nicht installiert oder nicht erlaubt: der Browser lehnt ab, still übergehen. */
+function abzeichenSetzen(n) {
+  if (!("setAppBadge" in navigator)) return;
+  try { Promise.resolve(n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {}); } catch (_) { /* gesperrt */ }
+}
+
+/* Das Logo aus index.html; bei offenen Fragen mit Punkt oben rechts. Die Farbe steht fest
+ * (= --zug hell), weil ein data-URL kein CSS kennt. href nur bei Wechsel setzen. */
+const FAVICON = $("favicon") ? $("favicon").getAttribute("href") || "" : "";
+let faviconPunkt = false;
+function faviconSetzen(punkt) {
+  const link = $("favicon");
+  if (!link || !FAVICON.startsWith("data:image/svg+xml,") || punkt === faviconPunkt) return;
+  faviconPunkt = punkt;
+  if (!punkt) { link.setAttribute("href", FAVICON); return; }
+  const svg = decodeURIComponent(FAVICON.slice(FAVICON.indexOf(",") + 1)).replace("</svg>",
+    "<circle cx='25' cy='7' r='7' fill='#fff'/><circle cx='25' cy='7' r='6' fill='#b93d0c'/></svg>");
+  link.setAttribute("href", "data:image/svg+xml," + encodeURIComponent(svg));
+}
+
+/* „Als App installieren“: unter der Anmeldung und im Fuß (dort nur im Browser-Tab). */
+function appHinweis() {
+  return el("details", { class: "mehr app-hinweis" },
+    el("summary", {}, icon("runter", "chevron"), "Als App installieren"),
+    el("ul", { class: "app-schritte" },
+      el("li", {}, el("b", { text: "iPhone: " }), "Teilen → „Zum Home-Bildschirm“. Die App hat einen eigenen Speicher: das Token dort einmal neu eingeben und „merken“ anhaken."),
+      el("li", {}, el("b", { text: "Edge: " }), "Menü … → Apps → „Diese Website als App installieren“."),
+      el("li", {}, el("b", { text: "Chrome: " }), "Menü → Streamen, speichern und teilen → „Seite als App installieren“.")));
 }
 
 function fragenZeichnen() {
@@ -2518,6 +2552,12 @@ function themaAnwenden() {
   if (thema === "hell") root.setAttribute("data-theme", "light");
   else if (thema === "dunkel") root.setAttribute("data-theme", "dark");
   else root.removeAttribute("data-theme");
+  // Fensterleiste der App (theme-color) folgt dem Schalter, nicht nur dem System.
+  const grund = thema === "auto" ? "" : getComputedStyle(root).getPropertyValue("--grund").trim();
+  for (const m of document.querySelectorAll('meta[name="theme-color"]')) {
+    if (!m.dataset.vorgabe) m.dataset.vorgabe = m.getAttribute("content");
+    m.setAttribute("content", grund || m.dataset.vorgabe);
+  }
   const t = THEMEN.find((x) => x.wert === thema) || THEMEN[0];
   const k = $("thema");
   k.replaceChildren(icon(t.ic));
@@ -2558,7 +2598,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-13";
+const FASSUNG = "2026.10.03-14";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
@@ -2614,6 +2654,17 @@ function verdrahten() {
   // Unter file:// teilen sich alle lokalen Dateien einen Speicher: Token dort nicht merken.
   if (location.protocol === "file:") $("token-merken").checked = false;
 
+  // Als App läuft das Pult schon: dann kein Hinweis im Fuß. Installiert man aus dem Tab heraus,
+  // wechselt der Modus im laufenden Fenster.
+  $("anmeldung-fehler").after(appHinweis());
+  const fussHinweis = appHinweis();
+  $("fuss").append(fussHinweis);
+  const alsApp = window.matchMedia ? matchMedia("(display-mode: standalone)") : null;
+  const fussHinweisZeigen = () => { fussHinweis.hidden = !!(alsApp && alsApp.matches) || navigator.standalone === true; };
+  fussHinweisZeigen();
+  if (alsApp && alsApp.addEventListener) alsApp.addEventListener("change", fussHinweisZeigen);
+  else if (alsApp && alsApp.addListener) alsApp.addListener(fussHinweisZeigen);
+
   $("thema").addEventListener("click", () => {
     const i = THEMEN.findIndex((x) => x.wert === thema);
     thema = THEMEN[(i + 1) % THEMEN.length].wert;
@@ -2662,6 +2713,8 @@ function verdrahten() {
     for (const id of ["zug-neu", "zug-waechter", "zug-lage", "fragen-liste", "aufgaben-liste", "zuletzt-box", "roadmap-gesamt", "roadmap-fluss",
       "roadmap-meilensteine", "roadmap-ready-box", "roadmap-extra", "thread-liste", "thread-detail"]) $(id).replaceChildren();
     document.title = SEITENTITEL;
+    abzeichenSetzen(0);
+    faviconSetzen(false);
     $("kopf-unter").textContent = "CORE-Forum · Roadmap 0.9.0b1 → 1.0";
     for (const id of ["verbindung", "neu-laden", "abmelden", "reiter", "fuss"]) $(id).hidden = true;
     meldungZu();
