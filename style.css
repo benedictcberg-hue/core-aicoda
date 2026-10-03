@@ -2,7 +2,7 @@
  * Farben nur als Tokens; hell, dunkel (System oder Schalter) und Windows-Kontrastmodus. */
 
 :root {
-  --pult-version: "2026.10.03-9";
+  --pult-version: "2026.10.03-10";
   --grund: #f3f5f8;
   --flaeche: #ffffff;
   --flaeche-2: #f2f5f9;
@@ -392,6 +392,8 @@ a.neu-text:hover .neu-titel { text-decoration: underline; }
 .neu-mehr > summary .chevron { transform: rotate(-90deg); }
 .neu-mehr[open] > summary .chevron { transform: rotate(0deg); }
 .marke.neu { background: var(--akzent); color: var(--akzent-text); }
+.block:focus { outline: none; }
+.block.ist-ziel .block-inhalt { outline: 3px solid var(--akzent); outline-offset: 2px; }
 .block.ist-neu .block-inhalt { box-shadow: 0 0 0 2px var(--akzent-hell), var(--schatten-1); }
 .block.ist-neu .block-avatar { box-shadow: 0 0 0 4px var(--grund), 0 0 0 6px var(--akzent); }
 

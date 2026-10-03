@@ -609,6 +609,35 @@ function zeigen(name) {
   }
 }
 
+/* Sprungmarke je Beitrag: #t/<slug>~<anker>. Slugs enthalten nie „~“. */
+function blockAnker(t) {
+  const aus = new Map();
+  const gezaehlt = new Map();
+  for (const b of t.bloecke) {
+    const basis = `b${String(b.zeit).replace(/\D/g, "")}-${b.ki}-${b.chat}`;
+    const n = (gezaehlt.get(basis) || 0) + 1;
+    gezaehlt.set(basis, n);
+    aus.set(b, n === 1 ? basis : `${basis}-${n}`);
+  }
+  return aus;
+}
+function ankerLink(t, b) {
+  const a = b ? blockAnker(t).get(b) : null;
+  return `#t/${encodeURIComponent(t.slug)}${a ? "~" + a : ""}`;
+}
+function ankerSpringen(anker) {
+  const ziel = document.getElementById(`anker-${anker}`);
+  if (!ziel) return false;
+  for (let d = ziel.closest("details"); d; d = d.parentElement ? d.parentElement.closest("details") : null) d.open = true;
+  ziel.scrollIntoView({ behavior: bewegungAus() ? "auto" : "smooth", block: "start" });
+  ziel.focus({ preventScroll: true });
+  ziel.classList.add("ist-ziel");
+  setTimeout(() => ziel.classList.remove("ist-ziel"), 2000);
+  return true;
+}
+// Nur einmal je Adresse springen: route() läuft auch bei jedem Neuzeichnen (Puls, Haken).
+let angesprungen = null;
+
 function route() {
   if (!zustand.token) { zeigen("anmeldung"); return; }
   if (!hatDaten()) return;
@@ -616,8 +645,10 @@ function route() {
   let reiter = h;
   if (h.startsWith("t/")) {
     reiter = "threads";
-    threadDetailZeichnen(h.slice(2));
+    const [slug, anker] = h.slice(2).split("~");
+    threadDetailZeichnen(slug);
     zeigen("ansicht-thread");
+    if (anker && angesprungen !== location.hash && ankerSpringen(anker)) angesprungen = location.hash;
   } else if (["zug", "roadmap", "threads"].includes(h)) {
     zeigen("ansicht-" + h);
   } else {
@@ -1409,7 +1440,7 @@ function neuZeile(e) {
       " ", el("span", { class: "neu-titel", text: `${e.nummer} · ${titel}` }),
       e.zusatz ? el("span", { class: "neu-zusatz", text: e.zusatz }) : null];
     return el("li", {}, icon(e.sorte === "FRAGE" ? "rueckfrage" : "threads", "neu-ic"),
-      t ? el("a", { class: "neu-text", href: `#t/${encodeURIComponent(t.slug)}` }, inhalt) : el("span", { class: "neu-text" }, inhalt));
+      t ? el("a", { class: "neu-text", href: ankerLink(t, t.bloecke.find(istNeuerBlock)) }, inhalt) : el("span", { class: "neu-text" }, inhalt));
   }
   if (e.art === "gate") return el("li", {}, icon("person", "neu-ic"), el("span", { class: "neu-text" }, el("span", { class: "neu-wer", text: e.wer }), " hat sich am Forum angemeldet"));
   if (e.art === "status") {
@@ -1470,6 +1501,25 @@ function neuGesehen() {
 
 /* --- Puls: beim Zurückkommen und alle 90 s nachsehen, ob es Neues gibt --- */
 
+/* Beim stillen Neuladen bleibt das oberste sichtbare Element an seiner Stelle. */
+function scrollHaltMerken() {
+  const kopf = document.querySelector(".kopf").getBoundingClientRect().bottom;
+  for (const e of document.querySelectorAll("main [data-anker], main [data-zeile], main [data-fokus]")) {
+    const r = e.getBoundingClientRect();
+    if (!r.height || r.bottom <= kopf) continue;
+    const [attr, wert] = e.dataset.anker ? ["data-anker", e.dataset.anker] : e.dataset.zeile ? ["data-zeile", e.dataset.zeile] : ["data-fokus", e.dataset.fokus];
+    return { wahl: `main [${attr}="${CSS.escape(wert)}"]`, top: r.top };
+  }
+  return null;
+}
+function scrollHaltAnwenden(halt) {
+  if (!halt) return;
+  for (const e of document.querySelectorAll(halt.wahl)) {
+    const r = e.getBoundingClientRect();
+    if (r.height) { window.scrollBy(0, r.top - halt.top); return; }
+  }
+}
+
 let pulsLaeuft = false;
 function beschaeftigt() {
   const a = document.activeElement;
@@ -1486,7 +1536,9 @@ async function puls() {
     zustand.kopfEtag = kopf.etag;
     if (kopf.sha === zustand.kopf) return;   // nur der eigene Commit
     if (beschaeftigt()) { $("neu-balken").hidden = false; return; }
+    const halt = scrollHaltMerken();
     await starten();
+    scrollHaltAnwenden(halt);
   } catch (_) {
     /* Puls ist Kür: Netzfehler still übergehen, der Knopf „Neu laden“ bleibt */
   } finally {
@@ -2059,8 +2111,12 @@ function threadDetailZeichnen(slug) {
     ziel.append(aufklappen(d, `vorgeschichte:${t.slug}`, !t.bloecke.length));
   }
   if (t.bloecke.length) {
+    const anker = blockAnker(t);
     ziel.append(el("div", { class: "verlauf" }, t.bloecke.map((b) =>
-      el("article", { class: `block s-${b.sorte}${istNeuerBlock(b) ? " ist-neu" : ""}` },
+      el("article", {
+        class: `block s-${b.sorte}${istNeuerBlock(b) ? " ist-neu" : ""}`,
+        "data-anker": anker.get(b), id: `anker-${anker.get(b)}`, tabindex: "-1",
+      },
         el("span", { class: `block-avatar ${avatarKlasse(b.ki)}`, "aria-hidden": "true", text: b.ki.slice(0, 1).toUpperCase() }),
         el("div", { class: "karte block-inhalt" },
           el("div", { class: "block-kopf" },
@@ -2160,7 +2216,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-9";
+const FASSUNG = "2026.10.03-10";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
@@ -2236,6 +2292,13 @@ function verdrahten() {
   $("abmelden").addEventListener("click", () => {
     speicherLoeschen(TOKEN_SCHLUESSEL);
     speicherLoeschen(ENTWURF_SCHLUESSEL);
+    // Alle Pult-Schlüssel (Stempel, Quittungen, Einstellungen) außer dem Farbschema
+    for (const speicher of [() => localStorage, () => sessionStorage]) {
+      try {
+        const sp = speicher();
+        for (const k of Object.keys(sp)) if (k.startsWith("core-pult-") && k !== THEMA_SCHLUESSEL) sp.removeItem(k);
+      } catch (_) { /* gesperrt */ }
+    }
     for (const k of Object.keys(entwuerfe)) delete entwuerfe[k];
     zustand.token = "";
     zustand.threads = [];
@@ -2265,8 +2328,9 @@ function verdrahten() {
   window.addEventListener("hashchange", () => {
     // Dieselbe Frage-Karte steht auch in der Thread-Ansicht: Entwürfe von dort mitnehmen.
     if (hatDaten()) mitFokus(fragenZeichnen);
+    angesprungen = null;
     route();
-    window.scrollTo(0, 0);
+    if (!location.hash.includes("~")) window.scrollTo(0, 0);
   });
   // Puls: beim Zurückkommen (Tab, Fenster, iOS-Rückkehr aus dem Speicher) und alle 90 s.
   document.addEventListener("visibilitychange", () => {
