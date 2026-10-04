@@ -5,8 +5,8 @@
   "start_url": "./#zug",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f3f5f8",
-  "theme_color": "#2b5f9e",
+  "background_color": "#f3f6f5",
+  "theme_color": "#ffffff",
   "lang": "de",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
