@@ -498,7 +498,7 @@ async function ladenEcht() {
   const erstesMal = !hatDaten();
   const knopf = $("neu-laden");
   if (erstesMal) zeigen("lade");
-  else { knopf.setAttribute("aria-busy", "true"); knopf.disabled = true; }
+  else knopfWartet(knopf, true);
   try {
     $("lade-balken").style.width = "5%";
     $("lade-text").textContent = "Lade Verzeichnis …";
@@ -557,8 +557,7 @@ async function ladenEcht() {
     zustand.geladen = new Date();
   } finally {
     if (ladeLauf === lauf) ladeLauf = null;
-    knopf.removeAttribute("aria-busy");
-    knopf.disabled = false;
+    knopfWartet(knopf, false);
   }
 
   const pille = $("verbindung");
@@ -809,6 +808,43 @@ function ringBox(anteil, beschriftung) {
   return el("div", { class: "ring-box", role: "img", "aria-label": beschriftung }, svg,
     el("span", { class: "ring-zahl", "aria-hidden": "true", text: `${Math.round(anteil * 100)}%` }));
 }
+/* --- Wartezustände: core-wait aus dem Style Book (Kapitel 07) ---
+ * Unter 2 s die Ringschlange am Auslöser, ohne Text; 2–10 s ein Marken-Loader mit einem Satz.
+ * Die Animation malt Konturen in der Grundfarbe ihrer Palette, darum muss die Palette zur
+ * Fläche passen: Seitengrund hell = light, Karte und Knopf hell = white, dunkel = dark. */
+function dunkelAktiv() {
+  const t = document.documentElement.getAttribute("data-theme");
+  if (t) return t === "dark";
+  return typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches;
+}
+const wartePalette = (flaeche) => (dunkelAktiv() ? "dark" : flaeche === "grund" ? "light" : "white");
+function warteZeichen(anim, flaeche = "flaeche") {
+  return el("core-wait", {
+    class: `warten warten-${anim}`, anim, palette: wartePalette(flaeche), "data-flaeche": flaeche,
+    fill: anim === "ring" ? ".98" : null, "aria-hidden": "true",
+  });
+}
+function wartePalettenNachziehen() {
+  for (const w of document.querySelectorAll("core-wait[data-flaeche]")) w.setAttribute("palette", wartePalette(w.dataset.flaeche));
+}
+if (typeof matchMedia === "function") {
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  if (mq.addEventListener) mq.addEventListener("change", wartePalettenNachziehen);
+}
+/* Knopf belegt: gesperrt, aria-busy, und die Ringschlange am Auslöser (CSS blendet beim
+ * Icon-Knopf das Icon aus). */
+function knopfWartet(k, an) {
+  if (an) {
+    k.disabled = true;
+    k.setAttribute("aria-busy", "true");
+    if (!k.querySelector(":scope > core-wait")) k.prepend(warteZeichen("ring"));
+  } else {
+    k.disabled = false;
+    k.removeAttribute("aria-busy");
+    for (const w of k.querySelectorAll(":scope > core-wait")) w.remove();
+  }
+}
+
 function aufklappen(details, schluessel, vorgabe) {
   details.open = zustand.offen.has(schluessel) ? zustand.offen.get(schluessel) : vorgabe;
   details.addEventListener("toggle", () => zustand.offen.set(schluessel, details.open));
@@ -1059,7 +1095,7 @@ function hakenKnopf(eintrag, art, klein) {
     title: zustand.probe ? "Probe läuft – erst beenden" : laeuft ? "wird gespeichert …" : fertig ? "erledigt · klicken öffnet wieder" : "als erledigt abhaken",
     "data-fokus": `haken:${eintrag.id}`,
     disabled: !!zustand.probe,
-  }, svg);
+  }, svg, laeuft ? warteZeichen("ring") : null);
   knopf.addEventListener("click", () => {
     if (zustand.laufend.has(eintrag.id) || zustand.probe) return;
     if (fertig) wiederOeffnen(eintrag, art); else abhaken(eintrag, art);
@@ -1472,7 +1508,7 @@ function nachzugZeichnen() {
           ? el("button", {
             type: "button", class: "knopf klein-knopf", "data-fokus": `vermerk:${id}`, disabled: laeuft, "aria-busy": laeuft ? "true" : null,
             title: vermerkFuer(paar), onclick: () => abhaken(p, "punkt", vermerkFuer(paar)),
-          }, icon("haken"), "Mit Vermerk abhaken")
+          }, laeuft ? warteZeichen("ring", "flaeche") : icon("haken"), "Mit Vermerk abhaken")
           : el("span", { class: "hinweis nachzug-park", text: "Umsortieren ist Sache der KI (nach §3)." }),
         el("button", { type: "button", class: "knopf zweit klein-knopf", "data-fokus": `meins:${id}`, onclick: () => nachzugZurueckNehmen(id) },
           icon("person"), "Gehört doch zu mir")));
@@ -2646,7 +2682,7 @@ function frageKarte({ thread, block, f }) {
 function sperrenWennSchreibt(pfad, knoepfe) {
   for (const k of knoepfe) {
     k.dataset.schreibt = pfad;
-    if (zustand.schreibt.has(pfad) || zustand.wartet.has(pfad)) { k.disabled = true; k.setAttribute("aria-busy", "true"); }
+    if (zustand.schreibt.has(pfad) || zustand.wartet.has(pfad)) knopfWartet(k, true);
   }
 }
 
@@ -2655,7 +2691,7 @@ async function threadSchreiben(pfad, knoepfe, arbeit) {
   if (zustand.schreibt.has(pfad)) return;
   const token = zustand.token;
   zustand.schreibt.add(pfad);
-  for (const k of knoepfe) { k.disabled = true; k.setAttribute("aria-busy", "true"); }
+  for (const k of knoepfe) knopfWartet(k, true);
   let danach = null;
   try {
     await gateSicherstellen();
@@ -2665,7 +2701,7 @@ async function threadSchreiben(pfad, knoepfe, arbeit) {
   } finally {
     zustand.schreibt.delete(pfad);
     for (const k of document.querySelectorAll("[data-schreibt]")) {
-      if (k.dataset.schreibt === pfad) { k.disabled = false; k.removeAttribute("aria-busy"); }
+      if (k.dataset.schreibt === pfad) knopfWartet(k, false);
     }
   }
   if (danach && zustand.token === token) danach();
@@ -4433,6 +4469,7 @@ const THEMEN = [
 let thema = (() => { try { return localStorage.getItem(THEMA_SCHLUESSEL) || "auto"; } catch (_) { return "auto"; } })();
 function themaAnwenden() {
   const root = document.documentElement;
+  queueMicrotask(wartePalettenNachziehen);
   if (thema === "hell") root.setAttribute("data-theme", "light");
   else if (thema === "dunkel") root.setAttribute("data-theme", "dark");
   else root.removeAttribute("data-theme");
@@ -4482,7 +4519,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.04-1";
+const FASSUNG = "2026.10.04-2";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');

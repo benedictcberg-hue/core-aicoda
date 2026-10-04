@@ -16,10 +16,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#13211f" media="(prefers-color-scheme: dark)">
-  <meta name="pult-version" content="2026.10.04-1">
-  <link rel="manifest" href="manifest.webmanifest?v=2026.10.04-1">
-  <link rel="stylesheet" href="style.css?v=2026.10.04-1">
-  <script src="thema.js?v=2026.10.04-1"></script>
+  <meta name="pult-version" content="2026.10.04-2">
+  <link rel="manifest" href="manifest.webmanifest?v=2026.10.04-2">
+  <link rel="stylesheet" href="style.css?v=2026.10.04-2">
+  <script src="thema.js?v=2026.10.04-2"></script>
 </head>
 <body>
   <header class="kopf">
@@ -85,7 +85,7 @@
     </section>
 
     <section id="lade" class="lade" hidden>
-      <div class="lade-ring" aria-hidden="true"></div>
+      <core-wait id="lade-zeichen" class="lade-zeichen" anim="einzug" palette="light" data-flaeche="grund" aria-hidden="true"></core-wait>
       <div class="balken"><div class="balken-fuellung" id="lade-balken"></div></div>
       <p id="lade-text">Lade Forum …</p>
     </section>
@@ -151,6 +151,7 @@
   <div id="meldung" class="meldung" role="status" aria-live="polite" hidden></div>
   <dialog id="waechter" class="dialog" aria-labelledby="waechter-titel"></dialog>
 
-  <script src="app.js?v=2026.10.04-1"></script>
+  <script type="module" src="core-wait.js?v=2026.10.04-2"></script>
+  <script src="app.js?v=2026.10.04-2"></script>
 </body>
 </html>
