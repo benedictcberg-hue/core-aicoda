@@ -1647,7 +1647,7 @@ function abzeichenSetzen(n) {
 }
 
 /* Das Logo aus index.html; bei offenen Fragen mit Punkt oben rechts. Die Farbe steht fest
- * (= --zug hell), weil ein data-URL kein CSS kennt. href nur bei Wechsel setzen. */
+ * (= --zug-voll hell), weil ein data-URL kein CSS kennt. href nur bei Wechsel setzen. */
 const FAVICON = $("favicon") ? $("favicon").getAttribute("href") || "" : "";
 let faviconPunkt = false;
 function faviconSetzen(punkt) {
@@ -1656,7 +1656,7 @@ function faviconSetzen(punkt) {
   faviconPunkt = punkt;
   if (!punkt) { link.setAttribute("href", FAVICON); return; }
   const svg = decodeURIComponent(FAVICON.slice(FAVICON.indexOf(",") + 1)).replace("</svg>",
-    "<circle cx='25' cy='7' r='7' fill='#fff'/><circle cx='25' cy='7' r='6' fill='#b93d0c'/></svg>");
+    "<circle cx='25' cy='7' r='7' fill='#fff'/><circle cx='25' cy='7' r='6' fill='#b25e00'/></svg>");
   link.setAttribute("href", "data:image/svg+xml," + encodeURIComponent(svg));
 }
 
@@ -4437,7 +4437,7 @@ function themaAnwenden() {
   else if (thema === "dunkel") root.setAttribute("data-theme", "dark");
   else root.removeAttribute("data-theme");
   // Fensterleiste der App (theme-color) folgt dem Schalter, nicht nur dem System.
-  const grund = thema === "auto" ? "" : getComputedStyle(root).getPropertyValue("--grund").trim();
+  const grund = thema === "auto" ? "" : getComputedStyle(root).getPropertyValue("--flaeche").trim();
   for (const m of document.querySelectorAll('meta[name="theme-color"]')) {
     if (!m.dataset.vorgabe) m.dataset.vorgabe = m.getAttribute("content");
     m.setAttribute("content", grund || m.dataset.vorgabe);
@@ -4482,7 +4482,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-25";
+const FASSUNG = "2026.10.04-1";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
