@@ -425,7 +425,7 @@ function threadParsen(slug, text) {
   return { slug, nummer, kopf, titel, art, bloecke, vorgeschichte, offen, geschlossen, letzter };
 }
 
-/* KIs, auf die ein Pflicht-Review („Pflicht: ja“) im Thread noch wartet. Wie forum.py:
+/* KIs, auf die ein Pflicht-Review („Pflicht: ja“, read before proceed) im Thread noch wartet. Wie forum.py:
    getaggt wird nur in der Zeile „An:“, geantwortet ist mit BEFUND/EINWAND/ZUSTIMMUNG/ZURUECK
    danach (gleich aus welchem Chat), ein BESCHLUSS des Betreibers danach schließt. */
 function pflichtOffen(t) {
@@ -444,16 +444,6 @@ function pflichtOffen(t) {
 
 function pflichtText(fehlt) {
   return `Review-Pflicht offen: wartet auf ${fehlt.map((k) => "@" + k).join(" ")}.`;
-}
-
-/* Vor einem BESCHLUSS: ist ein Pflicht-Review offen, erst fragen. true = angehalten. */
-function pflichtSperre(t, hinweis, weiter) {
-  const fehlt = pflichtOffen(t);
-  if (!fehlt.length || hinweis.dataset.trotzdem === "1") return false;
-  hinweis.replaceChildren(`${pflichtText(fehlt)} Ein BESCHLUSS übergeht das. `,
-    el("button", { type: "button", class: "knopf zweit klein-knopf", onclick: () => { hinweis.dataset.trotzdem = "1"; hinweis.hidden = true; weiter(); } }, "Trotzdem beschließen"));
-  hinweis.hidden = false;
-  return true;
 }
 
 function frageParsen(block) {
@@ -2623,13 +2613,11 @@ function frageKarte({ thread, block, f }) {
   if (f.vorschlaege.length) optionen.push(option("eigen", "–", "Eigene Antwort (im Feld unten)", false));
 
   const pfadHinweis = el("p", { class: "pfad-hinweis", role: "alert", hidden: true });
-  const pflichtHinweis = el("p", { class: "pfad-hinweis", role: "alert", hidden: true });
   // novalidate: wir prüfen selbst und sagen warum; die Browser-Blase (pattern) blockierte stumm
   const form = el("form", { class: "antwort-form", "data-quelle": quelle, novalidate: true },
     f.vorschlaege.length ? el("fieldset", { class: "vorschlaege" }, el("legend", { text: "Vorschläge" }), optionen) : null,
     angabeBox,
     pfadHinweis,
-    pflichtHinweis,
     f.empfehlung ? el("p", { class: "empfehlung" }, icon("stern"), el("span", {}, el("b", { text: "Empfehlung: " }), f.empfehlung)) : null,
     notiz,
     atempauseZeile(thread.pfad, quelle),
@@ -2666,7 +2654,6 @@ function frageKarte({ thread, block, f }) {
       }
     }
     pfadHinweis.hidden = true;
-    if (sorte !== "ZURUECK" && beschluss.checked && pflichtSperre(thread, pflichtHinweis, () => absenden(sorte))) return;
     const felder = [{ el: notiz, entwurf: `${schl}:text` }];
     if (angabeEl && a && a.art !== "datum") felder.push({ el: angabeEl, entwurf: `${schl}:angabe` });
     if ((await pruefeVorSenden(felder, senden)) !== "senden") return;
@@ -4452,7 +4439,7 @@ function threadDetailZeichnen(slug) {
   }
   angabenFehltZeichnen(t, anker);
   const fehlt = pflichtOffen(t);
-  if (fehlt.length) ziel.append(el("p", { class: "pfad-hinweis", role: "status", text: `${pflichtText(fehlt)} Erst danach BESCHLUSS.` }));
+  if (fehlt.length) ziel.append(el("p", { class: "pfad-hinweis", role: "status", text: `${pflichtText(fehlt)} Die Getaggten schreiben nichts im Forum, bevor sie es gelesen haben.` }));
   ziel.append(beitragForm(t));
 }
 
@@ -4467,16 +4454,14 @@ function beitragForm(t) {
   text.addEventListener("input", () => entwurfSetzen(`${schl}:text`, text.value));
   const quelle = `beitrag:${t.slug}`;
   const knopf = el("button", { type: "submit", class: "knopf", "data-fokus": `${schl}:senden`, "aria-keyshortcuts": "Control+Enter Meta+Enter", title: "Senden (Strg+Enter)" }, icon("senden"), "Anhängen");
-  const pflichtHinweis = el("p", { class: "pfad-hinweis", role: "alert", hidden: true });
   const form = el("form", { class: "karte antwort-form beitrag", "data-quelle": quelle },
     el("h3", {}, icon("notiz"), "Beitrag als betreiber/dashboard"),
     el("p", { class: "hinweis", text: "Wird unten an die Datei angehängt. BESCHLUSS schließt den Thread." }),
-    el("div", { class: "beitrag-zeile" }, sorte), text, pflichtHinweis, atempauseZeile(t.pfad, quelle), el("div", { class: "antwort-knoepfe" }, knopf));
+    el("div", { class: "beitrag-zeile" }, sorte), text, atempauseZeile(t.pfad, quelle), el("div", { class: "antwort-knoepfe" }, knopf));
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (zustand.wartet.has(t.pfad)) { atempauseJetzt(t.pfad); return; }
     if (!text.value.trim()) return;
-    if (sorte.value === "BESCHLUSS" && pflichtSperre(t, pflichtHinweis, () => form.requestSubmit())) return;
     if ((await pruefeVorSenden([{ el: text, entwurf: `${schl}:text` }], knopf)) !== "senden") return;
     const geschrieben = sorte.value;
     const inhalt = text.value;
