@@ -6,7 +6,7 @@
 Warum: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne eigene
 Fassung an jeder Datei (?v=…) kam nach einem Update die neue index.html mit dem
 alten app.js/style.css zusammen und die Seite zerfiel. Jede Änderung an app.js,
-style.css, thema.js oder manifest.webmanifest braucht deshalb eine neue Fassung.
+style.css, thema.js, core-wait.js oder manifest.webmanifest braucht deshalb eine neue Fassung.
 """
 import datetime
 import pathlib
@@ -17,7 +17,7 @@ WURZEL = pathlib.Path(__file__).resolve().parent
 STELLEN = {
     "index.html": [
         re.compile(r'(<meta name="pult-version" content=")([^"]+)(")'),
-        re.compile(r'((?:style\.css|thema\.js|app\.js|manifest\.webmanifest)\?v=)([^"]+)(")'),
+        re.compile(r'((?:style\.css|thema\.js|app\.js|core-wait\.js|manifest\.webmanifest)\?v=)([^"]+)(")'),
     ],
     "style.css": [re.compile(r'(--pult-version: ")([^"]+)(")')],
     "app.js": [re.compile(r'(const FASSUNG = ")([^"]+)(")')],

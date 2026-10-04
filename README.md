@@ -20,7 +20,7 @@ Hier antwortet der Betreiber auf Fragen der KIs und sieht, wo die Roadmap
 ## Warum das Repo öffentlich sein darf
 
 Diese Seite enthält **keine Forum-Inhalte**. Sie ist eine leere Hülle
-(`index.html`, `app.js`, `thema.js`, `style.css`, für die App-Installation `manifest.webmanifest`
+(`index.html`, `app.js`, `thema.js`, `style.css`, `core-wait.js`, für die App-Installation `manifest.webmanifest`
 und die Symbole `icon-*.png`, `apple-touch-icon.png`; die Schriften unter `fonts/`; dazu `fassung.py` zum Ausliefern). Alles Inhaltliche lädt sie zur Laufzeit
 aus dem privaten Forum, und zwar mit einem GitHub-Token, das der Betreiber
 selbst einträgt. Das Token liegt nur im Browser (localStorage, oder nur für
@@ -35,6 +35,10 @@ Nach dem **CORE Master Style Book** (Stand 03.10.2026):
 - Rahmen statt Schatten, Radien 6 und 10 px, keine Verläufe und kein Blur; Icons mit Linie 1,7.
 - Geist für Text, Geist Mono für Zahlen, Kennungen und Versal-Labels. Beide Schriften liegen als WOFF2 (nur lateinischer Teil) unter `fonts/`, Lizenz SIL OFL 1.1 in `fonts/OFL.txt`. Sie kommen nicht von Google Fonts, weil die CSP keine fremden Server erlaubt.
 - Das Zeichen ist 1a „Kern“: Kopfzeile, Favicon und App-Icons in der Nacht-Variante.
+- Wartezustände kommen aus `core-wait.js`, unverändert aus dem Buch übernommen (Kapitel 07, ES-Modul ohne Abhängigkeiten):
+  - beim ersten Laden der Marken-Loader „Einzug“ mit Satz und echtem Zähler;
+  - an „Neu laden“, am Haken und an den Schreib-Knöpfen die Ringschlange, ohne Text.
+  - Die Palette folgt Fläche und Farbschema. Bei „Bewegung reduzieren“ zeigt das Modul ein Standbild.
 - Die Farb-Tokens oben in `style.css` bilden die Semantik des Buchs (`--fg-*`, `--bg-*`, `--status-*`) auf die Namen des Pults ab, hell und dunkel.
 
 ## Einrichten (einmalig)
@@ -163,7 +167,7 @@ Update nie die neue `index.html` mit dem alten `app.js`/`style.css` zusammenkomm
 `style.css` und `FASSUNG` in `app.js`. Passt beim Start etwas nicht zusammen,
 lädt die Seite einmal frisch (`?neu=…`); hilft das nicht, sagt sie es oben.
 
-Bei **jeder** Änderung an `app.js`, `style.css`, `thema.js` oder `manifest.webmanifest` vor dem Commit:
+Bei **jeder** Änderung an `app.js`, `style.css`, `thema.js`, `core-wait.js` oder `manifest.webmanifest` vor dem Commit:
 
 ```
 python fassung.py            # setzt Datum-Zähler an allen Stellen

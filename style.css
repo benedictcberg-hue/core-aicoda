@@ -17,7 +17,7 @@
 }
 
 :root {
-  --pult-version: "2026.10.04-1";
+  --pult-version: "2026.10.04-2";
   --grund: #f3f6f5;
   --flaeche: #ffffff;
   --flaeche-2: #f3f6f5;
@@ -261,7 +261,11 @@ b, strong { font-weight: 600; }
 .knopf-icon.klein:hover { border-color: var(--linie); background: var(--flaeche); }
 .knopf-icon.an { color: var(--akzent); background: var(--akzent-hell); border-color: transparent; }
 .knopf-icon:disabled { cursor: progress; }
-.knopf-icon[aria-busy="true"] .ic { animation: drehen 0.9s linear infinite; }
+/* Belegt: Ringschlange am Auslöser (core-wait „ring“, unter 2 s, ohne Text). */
+.knopf-icon[aria-busy="true"] > .ic { display: none; }
+.knopf-icon > core-wait { width: 20px; height: 20px; }
+.knopf > core-wait { width: 16px; height: 16px; flex: none; }
+.knopf[aria-busy="true"] { opacity: 0.85; }
 
 input[type="password"], input[type="search"], input[type="text"], textarea, select {
   width: 100%; padding: 9px 12px; border: 1px solid var(--linie-stark); border-radius: var(--radius-klein);
@@ -379,11 +383,9 @@ details[open] > summary .chevron { transform: rotate(180deg); }
 .token-zeile { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-top: 4px; }
 
 .lade { max-width: 420px; margin: 80px auto; text-align: center; color: var(--text-leise); }
-.lade-ring {
-  width: 40px; height: 40px; margin: 0 auto 18px; border-radius: 50%;
-  border: 3px solid var(--flaeche-3); border-top-color: var(--akzent); animation: drehen 0.9s linear infinite;
-}
-.balken { height: 6px; background: var(--flaeche-3); border-radius: 99px; overflow: hidden; }
+/* Marken-Loader „Einzug“ (core-wait, Kapitel 07 B): Datenpunkte spiralen in den Kern – das Forum wird eingelesen. */
+.lade-zeichen { width: 128px; height: 128px; margin: 0 auto 16px; }
+.balken { height: 4px; background: var(--flaeche-3); border-radius: 99px; overflow: hidden; }
 .balken-fuellung { height: 100%; width: 0; background: var(--akzent); border-radius: 99px; transition: width 0.2s; }
 
 /* ---------- Überblick ---------- */
@@ -580,7 +582,7 @@ input[type="date"] {
 /* ---------- Haken ---------- */
 
 .haken {
-  appearance: none; display: inline-grid; place-items: center; flex: none;
+  position: relative; appearance: none; display: inline-grid; place-items: center; flex: none;
   width: 36px; height: 36px; margin: -4px 0 0 -6px; padding: 0;
   border: 0; border-radius: 50%; background: transparent; cursor: pointer;
 }
@@ -603,13 +605,8 @@ input[type="date"] {
 .haken[aria-checked="true"] .haken-strich { stroke: #fff; opacity: 1; stroke-dashoffset: 0; }
 .haken[aria-checked="true"]:hover svg { opacity: 0.8; }
 .haken[aria-busy="true"] { cursor: progress; }
-.haken[aria-busy="true"] .haken-ring {
-  fill: var(--flaeche); stroke-dasharray: 46 14; transform-box: fill-box; transform-origin: center;
-  animation: drehen 0.9s linear infinite;
-}
-.haken[aria-busy="true"][aria-checked="true"] .haken-ring { fill: var(--ok-hell); stroke: var(--ok-voll); }
-.haken[aria-busy="true"][aria-checked="true"] .haken-strich { stroke: var(--ok-voll); animation: zeichnen 0.3s ease-out both; }
-.haken[aria-busy="true"][aria-checked="false"] .haken-ring { stroke: var(--text-blass); }
+.haken[aria-busy="true"] svg { visibility: hidden; }
+.haken > core-wait { position: absolute; inset: 4px; }
 
 /* ---------- Dein Zug: Aufgaben ---------- */
 
@@ -1170,8 +1167,6 @@ mark { background: var(--teil-hell); color: inherit; border-radius: 3px; padding
 
 /* ---------- Bewegung ---------- */
 
-@keyframes drehen { to { transform: rotate(360deg); } }
-@keyframes zeichnen { from { stroke-dashoffset: 16; } to { stroke-dashoffset: 0; } }
 @keyframes rein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @keyframes hoch { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
 @keyframes weg {
