@@ -2938,6 +2938,75 @@ function beschlussbuchZeichnen() {
 
 /* --- Roadmap --- */
 
+/* --- Statusübersicht: ein Blick auf alle Punkte --- */
+
+/* Art eines Punkts für Raster und Legende: fertig, teilweise, wartet auf Nachzug, bei dir, bei den KIs. */
+function punktArt(p) {
+  const s = anzeigeStatus(p);
+  if (s === "x") return "ok";
+  if (s === "~") return "teil";
+  if (istMeins(p)) return beschluesse().nachzug.has(p.id) ? "nachzug" : "dir";
+  return "ki";
+}
+const PUNKT_ART = { ok: "fertig", teil: "teilweise", dir: "offen bei dir", nachzug: "wartet auf Nachzug", ki: "offen bei KI" };
+
+function statusKarte(rm) {
+  const alle = roadmapPunkte().map((x) => x.punkt);
+  const zahl = (f) => alle.filter(f).length;
+  const fertig = zahl((p) => anzeigeStatus(p) === "x");
+  const fragen = offeneFragen().length;
+  const ready = rm.ready || [];
+  const rFertig = ready.filter((q) => anzeigeStatus(q) === "x").length;
+  const chips = [
+    { wert: zahl((p) => p.wer === "betreiber" && istBeiDir(p)), name: "Entscheidungen bei dir", ic: "entscheidung", link: "#zug" },
+    { wert: zahl((p) => p.wer === "betrieb" && istBeiDir(p)), name: "Handläufe bei dir", ic: "handlauf", link: "#zug" },
+    { wert: fragen, name: fragen === 1 ? "offene Frage" : "offene Fragen", ic: "rueckfrage", link: "#zug" },
+    { wert: zahl((p) => p.wer === "code" && anzeigeStatus(p) !== "x"), name: "bei den KIs", ic: "code" },
+  ];
+  const ms = (rm.meilensteine || []).filter((m) => (m.punkte || []).length);
+  const raster = el("div", { class: "raster", role: "list", "aria-label": "Alle Punkte nach Meilenstein" }, ms.map((m) => {
+    const z = meilensteinZahlen(m);
+    const extra = z.beiDir ? `, ${z.beiDir} bei dir` : "";
+    return el("button", {
+      type: "button", class: `raster-gruppe ms-${z.stufe}`, role: "listitem",
+      "aria-label": `${m.id} ${m.titel}: ${z.x} von ${z.n} fertig${extra}`,
+      title: `${m.id} · ${m.titel} · ${z.x}/${z.n}${extra}`,
+      onclick: () => meilensteinZeigen(m.id),
+    },
+    el("span", { class: "raster-zellen", "aria-hidden": "true" },
+      m.punkte.map((p) => el("span", { class: `raster-zelle rz-${punktArt(p)}`, title: `${p.id} · ${p.titel} · ${PUNKT_ART[punktArt(p)]}` }))),
+    el("span", { class: "raster-id", text: m.id }));
+  }));
+  const vorhanden = new Set(alle.map(punktArt));
+  return el("div", { class: "karte status-karte" },
+    el("div", { class: "status-oben" },
+      ringBox(alle.length ? fertig / alle.length : 0, `${fertig} von ${alle.length} Punkten fertig`),
+      el("div", { class: "rm-kopf-text" },
+        el("div", { class: "lage-ziel", text: rm.produkt ? `${rm.produkt} · ${rm.ziel || ""}` : rm.ziel || "Roadmap" }),
+        el("div", { class: "lage-titel" }, `${fertig} von ${alle.length} Punkten fertig`,
+          ready.length ? el("span", { class: "status-ready", text: `Ready ${rFertig}/${ready.length}` }) : null))),
+    el("div", { class: "status-chips" }, chips.map((c) => el(c.link ? "a" : "span", {
+      class: `status-chip${c.link && c.wert ? " zug" : ""}`, href: c.link,
+    }, icon(c.ic), el("b", { text: String(c.wert) }), c.name))),
+    raster,
+    el("div", { class: "raster-legende", "aria-hidden": "true" }, Object.keys(PUNKT_ART).filter((a) => vorhanden.has(a)).map((a) =>
+      el("span", {}, el("span", { class: `raster-zelle rz-${a}` }), PUNKT_ART[a]))),
+  );
+}
+
+/* Wer hält was in einem Meilenstein: je Zuständigkeit fertig/alle. */
+function werAnteile(punkte) {
+  const teile = ["code", "betreiber", "betrieb"].map((w) => {
+    const p = punkte.filter((q) => q.wer === w);
+    if (!p.length) return null;
+    const x = p.filter((q) => anzeigeStatus(q) === "x").length;
+    const art = x === p.length ? "ok" : w === "code" ? "" : "zug";
+    return el("span", { class: `wer-anteil ${art}`.trim(), title: `${werText(w)}: ${x} von ${p.length} fertig` },
+      icon(WER_ICON[w]), `${x}/${p.length}`);
+  }).filter(Boolean);
+  return el("span", { class: "wer-anteile" }, teile);
+}
+
 function roadmapZeichnen() {
   const rm = zustand.roadmap;
   const gesamt = $("roadmap-gesamt");
@@ -2952,27 +3021,7 @@ function roadmapZeichnen() {
   }
   $("roadmap-stand").textContent = `Stand ${datumLesbar(rm.stand) || "?"} · ${rm.basis || ""} · Quelle: ${rm.quelle || "roadmap.json"}`;
 
-  const alle = roadmapPunkte().map((x) => x.punkt);
-  const zahl = (f) => alle.filter(f).length;
-  const fertig = zahl((p) => p.status === "x");
-  const fragen = offeneFragen().length;
-  const kacheln = [
-    { wert: `${fertig}/${alle.length}`, name: "Punkte fertig", ic: "ok", art: "ok" },
-    { wert: String(zahl((p) => p.wer === "betreiber" && istBeiDir(p))), name: "Entscheidungen bei dir", ic: "entscheidung", art: "zug", link: "#zug" },
-    { wert: String(zahl((p) => p.wer === "betrieb" && istBeiDir(p))), name: "Handläufe bei dir", ic: "handlauf", art: "zug", link: "#zug" },
-    { wert: String(fragen), name: "offene Fragen", ic: "rueckfrage", art: fragen ? "zug" : "", link: "#zug" },
-  ];
-  gesamt.append(
-    el("div", { class: "karte rm-kopf" },
-      ringBox(alle.length ? fertig / alle.length : 0, `${fertig} von ${alle.length} Punkten fertig`),
-      el("div", { class: "rm-kopf-text" },
-        el("div", { class: "lage-ziel", text: rm.produkt ? `${rm.produkt} · ${rm.ziel || ""}` : rm.ziel || "Roadmap" }),
-        el("div", { class: "lage-titel", text: `${fertig} von ${alle.length} Punkten fertig` }),
-        el("p", { class: "hinweis", text: "Das Flussdiagramm zeigt, welcher Meilenstein auf welchem aufbaut. Klick auf einen Knoten öffnet seine Punkte." }))),
-    el("div", { class: "kennzahlen" }, kacheln.map((k) => el(k.link ? "a" : "div", { class: "karte kennzahl", href: k.link },
-      el("span", { class: `kennzahl-ic ${k.art}`.trim() }, icon(k.ic)),
-      el("span", {}, el("span", { class: "kennzahl-wert", text: k.wert }), el("span", { class: "kennzahl-name", text: k.name }))))),
-  );
+  gesamt.append(statusKarte(rm));
 
   flussZeichnen();
   probeListeZeichnen();
@@ -2990,6 +3039,7 @@ function roadmapZeichnen() {
         el("span", { class: "ms-titel" }, el("span", { text: m.titel }),
           beiDir ? el("span", { class: "marke zug", text: `${beiDir} bei dir` }) : null,
           stufe === "fertig" ? el("span", { class: "marke ok" }, icon("haken"), "fertig") : null),
+        werAnteile(p),
         el("div", { class: "fortschritt", role: "img", "aria-label": `${x} von ${p.length} fertig` }, f1, f2),
         el("span", { class: "ms-zahl", text: `${x}/${p.length}` }),
         icon("runter", "chevron")),
@@ -4432,7 +4482,7 @@ async function starten() {
  * und hier. Neue Fassung ausliefern: python fassung.py (setzt alle Stellen).
  * Grund: GitHub Pages und Browser halten Dateien bis zu 10 Minuten. Ohne ?v= kam direkt nach
  * einem Update die neue index.html mit dem alten app.js/style.css an und zerlegte die Seite. */
-const FASSUNG = "2026.10.03-24";
+const FASSUNG = "2026.10.03-25";
 
 function fassungStimmt() {
   const meta = document.querySelector('meta[name="pult-version"]');
