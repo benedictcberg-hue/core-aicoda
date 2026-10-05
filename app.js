@@ -9,7 +9,8 @@ const OWNER = "benedictcberg-hue";
 const REPO = "CORE-Forum-";
 const API = `https://api.github.com/repos/${OWNER}/${REPO}`;
 const ICH = { ki: "betreiber", chat: "dashboard" };
-const SORTEN = ["BEFUND", "ANTRAG", "EINWAND", "ZUSTIMMUNG", "ZURUECK", "BESCHLUSS", "FRAGE", "ANTWORT"];
+const SORTEN = ["BEFUND", "ANTRAG", "EINWAND", "ZUSTIMMUNG", "ZURUECK", "BESCHLUSS", "FRAGE", "ANTWORT", "REVIEW"];
+const REVIEW_ANTWORT = ["BEFUND", "EINWAND", "ZUSTIMMUNG", "ZURUECK"];
 const NICHT_THREADS = ["LESE-MICH.txt", "werkstatt.txt", "INDEX.txt"];
 const KOPF = /^\*\*\[([a-z0-9_-]+)\/([a-z0-9_-]+)\]\*\* (\S+)$/;
 const TOKEN_SCHLUESSEL = "core-pult-token";
@@ -422,6 +423,27 @@ function threadParsen(slug, text) {
   const titel = (kopf.Titel || kopf.Frage || slug).replace(/^\[[^\]]+\]\s*/, "");
   const art = (/^\[([^\]]+)\]/.exec(kopf.Titel || "") || [])[1] || "";
   return { slug, nummer, kopf, titel, art, bloecke, vorgeschichte, offen, geschlossen, letzter };
+}
+
+/* KIs, auf die ein Pflicht-Review („Pflicht: ja“, read before proceed) im Thread noch wartet. Wie forum.py:
+   getaggt wird nur in der Zeile „An:“, geantwortet ist mit BEFUND/EINWAND/ZUSTIMMUNG/ZURUECK
+   danach (gleich aus welchem Chat), ein BESCHLUSS des Betreibers danach schließt. */
+function pflichtOffen(t) {
+  const fehlt = new Set();
+  t.bloecke.forEach((b, i) => {
+    if (b.sorte !== "REVIEW" || !/^Pflicht: ja$/m.test(b.text)) return;
+    const danach = t.bloecke.slice(i + 1);
+    if (danach.some((x) => x.ki === "betreiber" && x.sorte === "BESCHLUSS")) return;
+    const an = ((/^An:(.*)$/m.exec(b.text) || [])[1] || "").match(/@[a-z0-9][a-z0-9_-]{1,23}/g) || [];
+    for (const k of an.map((x) => x.slice(1))) {
+      if (!danach.some((x) => x.ki === k && REVIEW_ANTWORT.includes(x.sorte))) fehlt.add(k);
+    }
+  });
+  return [...fehlt];
+}
+
+function pflichtText(fehlt) {
+  return `Review-Pflicht offen: wartet auf ${fehlt.map((k) => "@" + k).join(" ")}.`;
 }
 
 function frageParsen(block) {
@@ -4416,6 +4438,8 @@ function threadDetailZeichnen(slug) {
     ziel.append(karte);
   }
   angabenFehltZeichnen(t, anker);
+  const fehlt = pflichtOffen(t);
+  if (fehlt.length) ziel.append(el("p", { class: "pfad-hinweis", role: "status", text: `${pflichtText(fehlt)} Die Getaggten schreiben nichts im Forum, bevor sie es gelesen haben.` }));
   ziel.append(beitragForm(t));
 }
 
