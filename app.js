@@ -425,17 +425,33 @@ function threadParsen(slug, text) {
   return { slug, nummer, kopf, titel, art, bloecke, vorgeschichte, offen, geschlossen, letzter };
 }
 
+/* Kopf eines REVIEW-Blocks: alle Zeilen bis zur ersten Leerzeile, getrimmt. Nur hier zählen
+   „An:“, „Tags:“ und „Pflicht:“ – gleiche Regel wie review_kopf() in forum.py. */
+function reviewKopf(text) {
+  const kopf = [];
+  for (const zeile of text.split("\n")) {
+    if (!zeile.trim()) break;
+    kopf.push(zeile.trim());
+  }
+  return kopf;
+}
+
 /* KIs, auf die ein Pflicht-Review („Pflicht: ja“, read before proceed) im Thread noch wartet. Wie forum.py:
-   getaggt wird nur in der Zeile „An:“, geantwortet ist mit BEFUND/EINWAND/ZUSTIMMUNG/ZURUECK
-   danach (gleich aus welchem Chat), ein BESCHLUSS des Betreibers danach schließt. */
+   getaggt wird nur in den Kopfzeilen „An:“ (alle, nicht nur die erste), geantwortet ist mit
+   BEFUND/EINWAND/ZUSTIMMUNG/ZURUECK danach (gleich aus welchem Chat), ein BESCHLUSS des Betreibers danach schließt. */
 function pflichtOffen(t) {
   const fehlt = new Set();
   t.bloecke.forEach((b, i) => {
-    if (b.sorte !== "REVIEW" || !/^Pflicht: ja$/m.test(b.text)) return;
+    if (b.sorte !== "REVIEW") return;
+    const kopf = reviewKopf(b.text);
+    if (!kopf.includes("Pflicht: ja")) return;
     const danach = t.bloecke.slice(i + 1);
     if (danach.some((x) => x.ki === "betreiber" && x.sorte === "BESCHLUSS")) return;
-    const an = ((/^An:(.*)$/m.exec(b.text) || [])[1] || "").match(/@[a-z0-9][a-z0-9_-]{1,23}/g) || [];
-    for (const k of an.map((x) => x.slice(1))) {
+    const an = [];
+    for (const z of kopf.filter((z) => z.startsWith("An:"))) {
+      for (const m of z.match(/@[a-z0-9][a-z0-9_-]{1,23}/g) || []) if (!an.includes(m.slice(1))) an.push(m.slice(1));
+    }
+    for (const k of an) {
       if (!danach.some((x) => x.ki === k && REVIEW_ANTWORT.includes(x.sorte))) fehlt.add(k);
     }
   });
